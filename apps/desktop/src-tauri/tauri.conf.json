@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "com.dabar.app",
   "build": {
-    "beforeDevCommand": "npm --prefix ../web run dev",
+    "beforeDevCommand": "npm --prefix apps/web run dev",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "npm --prefix ../web run build",
-    "frontendDist": "../web/dist"
+    "beforeBuildCommand": "npm --prefix apps/web run build",
+    "frontendDist": "../../web/dist"
   },
   "app": {
     "windows": [

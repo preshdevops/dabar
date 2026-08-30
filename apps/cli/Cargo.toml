@@ -1,0 +1,28 @@
+[package]
+name = "dabar-cli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Dabar CLI — process sermons from the terminal"
+
+[[bin]]
+name = "dabar"
+path = "src/main.rs"
+
+[dependencies]
+dabar-core = { path = "../../packages/core" }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+clap = { version = "4", features = ["derive", "color", "env"] }
+colored = "2"
+indicatif = "0.17"
+dirs = "5.0"
+toml = "0.8"
+sqlx = { version = "0.8", features = ["runtime-tokio-native-tls", "sqlite", "uuid", "chrono"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

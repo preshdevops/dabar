@@ -103,6 +103,9 @@ pub async fn run_pipeline(
     api_key: String,
     transcription_backend: dabar_core::whisper::TranscriptionBackend,
     app_data_dir: PathBuf,
+    _ollama_url: String,
+    _ollama_model: String,
+    _offline_mode: bool,
 ) -> Result<()> {
     let temp_dir = std::env::temp_dir().join(format!("dabar_{sermon_id}"));
     tokio::fs::create_dir_all(&temp_dir).await?;
@@ -354,6 +357,43 @@ pub async fn run_pipeline(
 
     tracing::info!("Pipeline completed successfully for sermon {sermon_id}");
     emit_complete(&app, sermon_id);
+    Ok(())
+}
+
+/// Saves sermon results when highlight detection is skipped (no API key / no Ollama configured).
+#[allow(dead_code)]
+async fn save_no_highlights(
+    app: &AppHandle,
+    db: &Db,
+    sermon_id: Uuid,
+    source: &PipelineSource,
+    audio_path: &Path,
+    segments: &[dabar_core::TranscriptSegment],
+    status: &str,
+    message: &str,
+) -> Result<()> {
+    let stored_title = match source {
+        PipelineSource::YouTube(_) | PipelineSource::GoogleDrive(_) => None,
+        PipelineSource::LocalFile(p) => p.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()),
+    };
+
+    db.save_sermon_results(
+        sermon_id,
+        stored_title.as_deref(),
+        Some(&audio_path.to_string_lossy()),
+        &[],
+        &[],
+        segments,
+        Some(status),
+        Some(message),
+        None,
+        Some(0),
+    )
+    .await?;
+
+    db.delete_checkpoint(sermon_id).await?;
+    tracing::info!("Pipeline completed (no highlights) for sermon {sermon_id}: {message}");
+    emit_complete(app, sermon_id);
     Ok(())
 }
 

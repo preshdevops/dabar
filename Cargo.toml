@@ -2,6 +2,7 @@
 members = [
   "packages/core",
   "apps/server",
+  "apps/cli",
   "apps/desktop/src-tauri",
 ]
 resolver = "2"
@@ -25,3 +26,7 @@ opt-level = "s"
 lto = true
 strip = true
 codegen-units = 1
+
+[profile.dev]
+debug = 0
+strip = true

@@ -123,6 +123,22 @@ async fn start_pipeline(
         }
     };
 
+    // Read Ollama settings for offline LLM highlight detection
+    let ollama_url = state
+        .db
+        .get_setting("ollama_url")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "http://localhost:11434".to_string());
+    let ollama_model = state
+        .db
+        .get_setting("ollama_model")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "llama3.2:3b".to_string());
+
     // Spawn pipeline in background — never blocks the UI
     let db_clone = state.db.clone();
     let app_clone = app.clone();
@@ -137,6 +153,9 @@ async fn start_pipeline(
             groq_api_key,
             transcription_backend,
             app_data_dir_clone,
+            ollama_url,
+            ollama_model,
+            offline_mode,
         )
         .await;
 
@@ -370,6 +389,10 @@ async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String>
         .ok()
         .flatten()
         .unwrap_or_else(|| "groq".to_string());
+    let ollama_url = state.db.get_setting("ollama_url").await.ok().flatten()
+        .unwrap_or_else(|| "http://localhost:11434".to_string());
+    let ollama_model = state.db.get_setting("ollama_model").await.ok().flatten()
+        .unwrap_or_else(|| "llama3.2:3b".to_string());
 
     Ok(AppSettings {
         groq_api_key,
@@ -378,6 +401,8 @@ async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String>
         offline_model,
         custom_vocabulary: custom_vocab,
         transcription_backend,
+        ollama_url,
+        ollama_model,
     })
 }
 
@@ -390,6 +415,8 @@ async fn save_settings(settings: AppSettings, state: State<'_, AppState>) -> Res
     state.db.set_setting("offline_model", &settings.offline_model).await.map_err(|e| e.to_string())?;
     state.db.set_setting("custom_vocabulary", &settings.custom_vocabulary).await.map_err(|e| e.to_string())?;
     state.db.set_setting("transcription_backend", &settings.transcription_backend).await.map_err(|e| e.to_string())?;
+    state.db.set_setting("ollama_url", &settings.ollama_url).await.map_err(|e| e.to_string())?;
+    state.db.set_setting("ollama_model", &settings.ollama_model).await.map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -536,10 +563,24 @@ pub struct AppSettings {
     pub custom_vocabulary: String,
     #[serde(default = "default_backend_name")]
     pub transcription_backend: String,
+    /// Ollama server URL for local LLM highlight detection (e.g. "http://localhost:11434")
+    #[serde(default = "default_ollama_url")]
+    pub ollama_url: String,
+    /// Ollama model name for highlight detection (e.g. "llama3.2:3b")
+    #[serde(default = "default_ollama_model")]
+    pub ollama_model: String,
 }
 
 fn default_backend_name() -> String {
     "groq".to_string()
+}
+
+fn default_ollama_url() -> String {
+    "http://localhost:11434".to_string()
+}
+
+fn default_ollama_model() -> String {
+    "llama3.2:3b".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

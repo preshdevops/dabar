@@ -378,27 +378,51 @@ fn get_binary_command(name: &str) -> Command {
         name.to_string()
     };
 
-    // 1. Check AppData / LocalAppData / UserProfile .dabar/bin
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let candidate = PathBuf::from(&appdata).join("dabar").join("bin").join(&exe_name);
-        if candidate.exists() {
-            return Command::new(candidate);
+    // 1. Platform-specific app-data bin directories
+    #[cfg(windows)]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let candidate = PathBuf::from(&appdata).join("dabar").join("bin").join(&exe_name);
+            if candidate.exists() {
+                return Command::new(candidate);
+            }
+        }
+        if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
+            let candidate = PathBuf::from(&localappdata).join("dabar").join("bin").join(&exe_name);
+            if candidate.exists() {
+                return Command::new(candidate);
+            }
         }
         let candidate2 = PathBuf::from(&appdata).join("com.preshdevops.dabar").join("bin").join(&exe_name);
         if candidate2.exists() {
             return Command::new(candidate2);
         }
     }
-    if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
-        let candidate = PathBuf::from(&localappdata).join("dabar").join("bin").join(&exe_name);
-        if candidate.exists() {
-            return Command::new(candidate);
-        }
-        let candidate2 = PathBuf::from(&localappdata).join("com.preshdevops.dabar").join("bin").join(&exe_name);
-        if candidate2.exists() {
-            return Command::new(candidate2);
+    // XDG-compliant path for Linux/macOS: ~/.local/share/dabar/bin/<exe>
+    #[cfg(not(windows))]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let xdg_data = std::env::var("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from(&home).join(".local").join("share"));
+            let candidate = xdg_data.join("dabar").join("bin").join(&exe_name);
+            if candidate.exists() {
+                return Command::new(candidate);
+            }
+            // Legacy ~/.dabar/bin fallback
+            let legacy = PathBuf::from(&home).join(".dabar").join("bin").join(&exe_name);
+            if legacy.exists() {
+                return Command::new(legacy);
+            }
+            // ~/.local/bin fallback (user-installed system binaries)
+            let local_bin = PathBuf::from(&home).join(".local").join("bin").join(&exe_name);
+            if local_bin.exists() {
+                return Command::new(local_bin);
+            }
         }
     }
+
+    // Shared HOME/.dabar/bin for any remaining platforms
     if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
         let home_p = PathBuf::from(&home);
         let cand1 = home_p.join(".dabar").join("bin").join(&exe_name);
