@@ -210,7 +210,7 @@ export default function Dashboard() {
             </div>
             <div className="p-2.5 rounded-md bg-surface-elevated border border-border">
               <span className="text-xs text-muted block">Clips Created</span>
-              <span className="text-xl font-bold text-orange font-editorial">
+              <span className="text-xl font-bold text-accent font-editorial">
                 {totalClips}
               </span>
             </div>
@@ -301,7 +301,7 @@ export default function Dashboard() {
                               {chaptersCount > 0 && (
                                 <>
                                   <span>·</span>
-                                  <span className="text-orange font-medium">
+                                  <span className="text-accent font-medium">
                                     {chaptersCount} clips
                                   </span>
                                 </>

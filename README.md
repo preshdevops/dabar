@@ -59,7 +59,7 @@ dabar/
    - **Scripture Reference Verification**: Detected Bible verses (e.g. `📖 John 3:16`) are shown with canonical text alongside for volunteer verification.
    - **Custom Church Vocabulary**: Case-insensitive autocorrection for church leaders, Hebrew/Greek terms, and ministry names.
 3. **Pastoral Highlight Detection**:
-   - Groq Llama 3.3 70B evaluates theological depth, testimonies, scripture exposition, and calls to faith rather than generic social media hooks.
+   - GPT-OSS 120B evaluates theological depth, testimonies, scripture exposition, and calls to faith rather than generic social media hooks.
    - Generates sermon-specific *"Why it matters"* explanations for every clip.
 4. **4-Step Export Studio**:
    - **Live Reflow Preview**: Live video playback with caption preview.

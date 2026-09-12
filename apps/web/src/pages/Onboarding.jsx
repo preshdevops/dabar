@@ -4,22 +4,20 @@ import {
   getOfflineStatus,
   downloadYtDlp,
   downloadFfmpeg,
-  downloadWhisperModel,
 } from "../lib/api.js";
 
 export default function Onboarding() {
   const navigate = useNavigate();
-  const [offlineStatus, setOfflineStatus] = useState(null);
+  const [activeState, setActiveState] = useState(1); // 1: Audio, 2: Transcript, 3: Clip
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
 
   // Background dependency check & install
   useEffect(() => {
     async function initTools() {
       try {
         const status = await getOfflineStatus();
-        setOfflineStatus(status);
         if (!status?.yt_dlp_ready) downloadYtDlp().catch(() => {});
         if (!status?.ffmpeg_ready) downloadFfmpeg().catch(() => {});
-        if (!status?.whisper_tiny_ready) downloadWhisperModel("tiny").catch(() => {});
       } catch {
         // Silently continue
       }
@@ -27,44 +25,63 @@ export default function Onboarding() {
     initTools();
   }, []);
 
+  // Detect system prefers-reduced-motion
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    setPrefersReducedMotion(mediaQuery.matches);
+    if (mediaQuery.matches) {
+      setActiveState(2); // Show State 2 (transcript) statically
+    }
+    const handler = (e) => {
+      setPrefersReducedMotion(e.matches);
+      if (e.matches) setActiveState(2);
+    };
+    mediaQuery.addEventListener("change", handler);
+    return () => mediaQuery.removeEventListener("change", handler);
+  }, []);
+
+  // Self-animating continuous cycle: 5.5 seconds per state, looping forever
+  useEffect(() => {
+    if (prefersReducedMotion) return;
+    const timer = setInterval(() => {
+      setActiveState((prev) => (prev % 3) + 1);
+    }, 5500);
+    return () => clearInterval(timer);
+  }, [prefersReducedMotion]);
+
   function handleStart(destination = "/upload") {
     localStorage.setItem("dabaar_onboarded", "true");
     navigate(destination);
   }
 
   return (
-    <div className="min-h-[100dvh] bg-base text-primary flex flex-col justify-between selection:bg-orange/20 overflow-x-hidden">
+    <div className="min-h-[100dvh] bg-base text-primary flex flex-col justify-between selection:bg-accent/20 overflow-x-hidden font-sans">
       {/* ── Top Atmospheric Accent Line ──────────────────────────────────── */}
-      <div className="h-[2px] w-full bg-gradient-to-r from-transparent via-orange to-transparent opacity-80" />
+      <div className="h-[2px] w-full bg-gradient-to-r from-transparent via-accent to-transparent opacity-80" />
 
-      {/* ── Top Minimal Header ───────────────────────────────────────────── */}
-      <header className="w-full px-6 sm:px-12 py-6 flex items-center justify-between border-b border-border/40 backdrop-blur-md">
+      {/* ── Top Header ───────────────────────────────────────────────────── */}
+      <header className="w-full px-6 sm:px-12 py-5 flex items-center justify-between border-b border-border/60 backdrop-blur-md bg-surface/40 sticky top-0 z-50">
         <div className="flex items-center gap-3.5">
-          <div className="w-9 h-9 rounded-xl bg-surface-elevated border border-white/10 text-primary flex items-center justify-center font-editorial font-bold text-lg shadow-sm relative group">
-            <span className="text-orange-light select-none">ד</span>
-            <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-orange ring-2 ring-base animate-pulse" />
+          <div className="w-9 h-9 rounded-xl bg-surface-elevated border border-border flex items-center justify-center font-editorial font-bold text-lg shadow-xs relative">
+            <span className="text-accent select-none">ד</span>
+            <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent ring-2 ring-base" />
           </div>
           <div>
             <div className="flex items-center gap-2">
               <span className="font-editorial text-xl font-bold tracking-tight text-primary">
                 DABAR
               </span>
-              <span className="text-[10px] font-mono uppercase tracking-widest text-orange bg-orange/10 px-2 py-0.5 rounded-full border border-orange/20">
+              <span className="text-[10px] font-mono uppercase tracking-widest text-accent bg-accent-muted px-2 py-0.5 rounded-md border border-accent-border">
                 דָּבָר
               </span>
             </div>
             <p className="text-[11px] text-muted tracking-tight">
-              Sovereign Preaching & Sermon Intelligence Studio
+              Sermon Media & Clip Studio
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
-          <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-elevated border border-border text-[11px] text-secondary font-mono">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
-            <span>Local Neural Core Ready</span>
-          </div>
-
+        <div className="flex items-center gap-3 sm:gap-4">
           <button
             onClick={() => handleStart("/dashboard")}
             className="text-xs text-secondary hover:text-primary transition-colors flex items-center gap-1.5 py-1.5 px-3 rounded-lg hover:bg-surface-elevated border border-transparent hover:border-border font-medium"
@@ -76,313 +93,206 @@ export default function Onboarding() {
       </header>
 
       {/* ── Main Editorial Showcase ──────────────────────────────────────── */}
-      <main className="max-w-6xl mx-auto px-6 sm:px-12 py-12 sm:py-16 w-full flex-1 flex flex-col justify-center space-y-16">
-        {/* ── Section 1: Hero & Purpose ──────────────────────────────────── */}
+      <main className="max-w-4xl mx-auto px-6 sm:px-12 py-12 sm:py-16 w-full flex-1 flex flex-col justify-center space-y-20">
+        {/* ── Section 1: Hero ──────────────────────────────────────────────── */}
         <div className="text-center max-w-3xl mx-auto space-y-6">
-          <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-surface-elevated border border-white/10 text-[11px] font-medium text-secondary">
-            <span className="text-orange font-bold font-mono">01</span>
-            <span className="w-1 h-1 rounded-full bg-border" />
-            <span>The Sacred Word Transformed for the Digital Age</span>
-          </div>
-
           <h1 className="text-3xl sm:text-5xl lg:text-6xl font-editorial font-bold text-primary tracking-tight leading-[1.12]">
-            Turn Sunday sermons into{" "}
-            <span className="text-orange font-editorial italic underline decoration-orange/30 decoration-wavy underline-offset-4">
-              scriptural chapters
-            </span>{" "}
-            and high-impact reels.
+            Turn Sunday sermons into chapters and social video clips.
           </h1>
 
           <p className="text-secondary text-sm sm:text-base leading-relaxed max-w-2xl mx-auto">
-            Dabar is a private, local-first preaching media studio. It transcribes hours of sermon
-            recordings with sub-second accuracy, identifies key theological revelations, and
-            surfaces ready-to-publish vertical clips with zero cloud lock-in.
+            Dabar automatically converts your sermon recordings into word-for-word transcripts,
+            YouTube section timestamps, and short vertical video clips ready for Instagram, TikTok,
+            and YouTube Shorts.
           </p>
 
-          {/* Primary Nested CTA Button */}
-          <div className="pt-3 flex flex-col sm:flex-row items-center justify-center gap-4">
+          {/* Primary CTA Buttons */}
+          <div className="pt-2 flex flex-col sm:flex-row items-center justify-center gap-3.5">
             <button
               onClick={() => handleStart("/upload")}
-              className="group relative inline-flex items-center gap-3.5 px-7 py-3.5 rounded-full bg-orange hover:bg-orange-hover text-white font-sans text-sm font-semibold transition-all duration-300 shadow-[0_4px_24px_-4px_rgba(234,88,12,0.4)] hover:shadow-[0_8px_32px_-4px_rgba(234,88,12,0.5)] active:scale-[0.98]"
+              className="group relative inline-flex items-center gap-3 px-7 py-3 rounded-full bg-accent hover:bg-accent-hover text-accent-fg font-sans text-sm font-semibold transition-all duration-200 shadow-sm active:scale-[0.98]"
             >
-              <span>Get Started · Ingest Sermon</span>
-              <div className="w-7 h-7 rounded-full bg-white/20 flex items-center justify-center transition-transform duration-300 group-hover:translate-x-1 group-hover:-translate-y-[1px]">
-                <i className="bx bx-right-arrow-alt text-lg text-white" />
+              <span>Upload a Sermon</span>
+              <div className="w-6 h-6 rounded-full bg-white/20 flex items-center justify-center transition-transform duration-200 group-hover:translate-x-0.5">
+                <i className="bx bx-right-arrow-alt text-base text-accent-fg" />
               </div>
             </button>
 
             <button
               onClick={() => handleStart("/dashboard")}
-              className="px-6 py-3.5 rounded-full bg-surface-elevated hover:bg-surface-hover border border-border text-secondary hover:text-primary text-sm font-medium transition-colors"
+              className="px-6 py-3 rounded-full bg-surface-elevated hover:bg-surface-hover border border-border text-secondary hover:text-primary text-sm font-medium transition-colors"
             >
-              Open Studio Workspace
+              Open Sermon Library
             </button>
           </div>
         </div>
 
-        {/* ── Section 2: Visual Pipeline Architecture ─────────────────────── */}
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xs uppercase font-mono tracking-[0.2em] text-muted">
-              How Dabar Processes Preaching
+        {/* ── Section 2: ONE Continuous Self-Animating Morphing Element ──────── */}
+        <section aria-label="Transformation Demonstration" className="w-full flex flex-col items-center justify-center py-6">
+          <div className="w-full max-w-[600px] h-64 relative flex items-center justify-center">
+            {/* ── STATE 1: Raw Jagged Audio Waveform ─────────────────────────── */}
+            <div
+              className={`absolute inset-0 flex items-center justify-center transition-all duration-700 ease-in-out ${
+                activeState === 1
+                  ? "opacity-100 scale-100 pointer-events-auto"
+                  : "opacity-0 scale-95 pointer-events-none"
+              }`}
+            >
+              <div className="w-full max-w-[540px] flex items-center justify-between gap-1 sm:gap-1.5 px-4 h-28">
+                {[
+                  18, 55, 88, 30, 65, 95, 42, 80, 100, 58, 25, 90, 85, 45, 75, 92, 34,
+                  68, 98, 90, 80, 48, 22, 70, 94, 76, 52, 38, 88, 96, 62, 44, 72, 85,
+                  28, 58, 92, 78, 48, 20,
+                ].map((height, idx) => (
+                  <div
+                    key={idx}
+                    className="w-full rounded-full transition-all duration-300"
+                    style={{
+                      height: `${height}%`,
+                      backgroundColor: "var(--border-strong, #374151)",
+                      opacity: idx % 3 === 0 ? 0.9 : idx % 2 === 0 ? 0.6 : 0.4,
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+
+            {/* ── STATE 2: Transcribed Text with Moving Accent Highlight ─────── */}
+            <div
+              className={`absolute inset-0 flex items-center justify-center transition-all duration-700 ease-in-out ${
+                activeState === 2
+                  ? "opacity-100 scale-100 pointer-events-auto"
+                  : "opacity-0 scale-95 pointer-events-none"
+              }`}
+            >
+              <div className="w-full max-w-[540px] px-6 space-y-4 text-left">
+                {/* Line 1 */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-3">
+                    <span className="text-[11px] font-mono text-muted select-none">04:12</span>
+                    <div className="h-2.5 w-4/5 bg-surface-elevated rounded-full" />
+                  </div>
+                  <div className="h-2.5 w-full bg-surface-elevated rounded-full ml-11" />
+                </div>
+
+                {/* Line 2 with Moving Highlight Block */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-3">
+                    <span className="text-[11px] font-mono text-accent select-none font-semibold">04:28</span>
+                    <div className="h-5 flex-1 rounded-md bg-accent-muted border border-accent-border px-2 flex items-center overflow-hidden">
+                      <span className="text-xs font-editorial font-medium text-accent truncate">
+                        “Those who wait upon the Lord shall renew their strength…”
+                      </span>
+                    </div>
+                  </div>
+                  <div className="h-2.5 w-3/4 bg-surface-elevated rounded-full ml-11" />
+                </div>
+
+                {/* Line 3 */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-3">
+                    <span className="text-[11px] font-mono text-muted select-none">04:45</span>
+                    <div className="h-2.5 w-2/3 bg-surface-elevated rounded-full" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* ── STATE 3: Clipped Vertical 9:16 Rectangle ───────────────────── */}
+            <div
+              className={`absolute inset-0 flex items-center justify-center transition-all duration-700 ease-in-out ${
+                activeState === 3
+                  ? "opacity-100 scale-100 pointer-events-auto"
+                  : "opacity-0 scale-95 pointer-events-none"
+              }`}
+            >
+              <div className="w-36 h-56 rounded-xl border border-border bg-surface-elevated p-3 flex flex-col justify-between shadow-sm">
+                <div className="space-y-1.5">
+                  <div className="h-1 w-8 bg-muted/40 rounded-full" />
+                  <div className="h-1.5 w-full bg-border rounded-full" />
+                </div>
+
+                <div className="space-y-1 text-center py-2">
+                  <div className="h-2 w-full bg-border rounded-full" />
+                  <div className="h-2 w-4/5 mx-auto bg-border rounded-full" />
+                </div>
+
+                {/* Bottom Caption Line */}
+                <div className="space-y-1.5 pt-2 border-t border-border/50">
+                  <div className="h-2 w-full bg-accent rounded-full opacity-90" />
+                  <div className="h-1.5 w-2/3 bg-accent rounded-full opacity-60" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* ── Three Quiet Plain-Text State Labels Below ────────────────────── */}
+          <div className="flex items-center justify-center gap-8 sm:gap-12 pt-8 text-xs font-sans select-none">
+            <span
+              className={`transition-colors duration-500 ${
+                activeState === 1 ? "text-accent font-bold" : "text-muted font-normal"
+              }`}
+            >
+              Clean & Ingest Audio
+            </span>
+            <span
+              className={`transition-colors duration-500 ${
+                activeState === 2 ? "text-accent font-bold" : "text-muted font-normal"
+              }`}
+            >
+              Accurate Transcript
+            </span>
+            <span
+              className={`transition-colors duration-500 ${
+                activeState === 3 ? "text-accent font-bold" : "text-muted font-normal"
+              }`}
+            >
+              Social Video Clips
+            </span>
+          </div>
+        </section>
+
+        {/* ── Section 3: Bottom Call-to-Action ──────────────────────────────── */}
+        <div className="text-center space-y-6 pt-4">
+          <div className="max-w-xl mx-auto space-y-2">
+            <h2 className="font-editorial text-2xl sm:text-3xl font-bold text-primary">
+              Ready to get started?
             </h2>
-            <span className="text-[11px] font-mono text-orange/80">3-Stage Neural Pipeline</span>
+            <p className="text-xs sm:text-sm text-secondary">
+              Upload your recorded sermon file or paste a YouTube link to get your transcript and
+              clips in minutes.
+            </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-            {/* Card 1: Ingest & Acoustic Clean */}
-            <div className="double-bezel group">
-              <div className="double-bezel-inner p-6 space-y-4 h-full flex flex-col justify-between">
-                <div className="space-y-3">
-                  <div className="w-10 h-10 rounded-xl bg-orange/10 border border-orange/20 text-orange flex items-center justify-center text-xl">
-                    <i className="bx bx-waveform" />
-                  </div>
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-mono font-bold text-orange">STAGE 01</span>
-                      <h3 className="font-editorial text-lg font-bold text-primary">
-                        Acoustic Pre-Processing
-                      </h3>
-                    </div>
-                    <p className="text-xs text-secondary leading-relaxed">
-                      Accepts YouTube live streams, 4K camera files, or audio master tracks. Removes
-                      low-frequency room rumble, isolates speech, and balances dynamic volume.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="pt-3 border-t border-border/60 flex items-center justify-between text-[11px] font-mono text-muted">
-                  <span>DSP Filtering</span>
-                  <span className="text-emerald-500 font-semibold">16kHz Mono</span>
-                </div>
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+            <button
+              onClick={() => handleStart("/upload")}
+              className="group inline-flex items-center gap-3 px-8 py-3 rounded-full bg-accent hover:bg-accent-hover text-accent-fg font-sans text-sm font-semibold transition-all duration-200 shadow-sm active:scale-[0.98]"
+            >
+              <span>Upload a Sermon</span>
+              <div className="w-6 h-6 rounded-full bg-white/20 flex items-center justify-center transition-transform duration-200 group-hover:translate-x-0.5">
+                <i className="bx bx-upload text-sm text-accent-fg" />
               </div>
-            </div>
+            </button>
 
-            {/* Card 2: Whisper Transcription */}
-            <div className="double-bezel group">
-              <div className="double-bezel-inner p-6 space-y-4 h-full flex flex-col justify-between">
-                <div className="space-y-3">
-                  <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400 flex items-center justify-center text-xl">
-                    <i className="bx bx-text" />
-                  </div>
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-mono font-bold text-blue-400">STAGE 02</span>
-                      <h3 className="font-editorial text-lg font-bold text-primary">
-                        Word-Level Transcription
-                      </h3>
-                    </div>
-                    <p className="text-xs text-secondary leading-relaxed">
-                      Generates timestamped transcripts with syllable-level precision. Completely
-                      private on your device with offline GGML Whisper, or turbocharged via Groq
-                      API.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="pt-3 border-t border-border/60 flex items-center justify-between text-[11px] font-mono text-muted">
-                  <span>Syllable Sync</span>
-                  <span className="text-blue-400 font-semibold">Millisecond Precision</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Card 3: Scripture & Clip Intelligence */}
-            <div className="double-bezel group">
-              <div className="double-bezel-inner p-6 space-y-4 h-full flex flex-col justify-between">
-                <div className="space-y-3">
-                  <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/20 text-purple-400 flex items-center justify-center text-xl">
-                    <i className="bx bx-film" />
-                  </div>
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-mono font-bold text-purple-400">STAGE 03</span>
-                      <h3 className="font-editorial text-lg font-bold text-primary">
-                        Theological Intelligence
-                      </h3>
-                    </div>
-                    <p className="text-xs text-secondary leading-relaxed">
-                      Detects Scripture references (e.g. <em>Isaiah 40:31</em>), creates logical sermon
-                      divisions, and extracts 1–5 minute high-impact moments ready for social reels.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="pt-3 border-t border-border/60 flex items-center justify-between text-[11px] font-mono text-muted">
-                  <span>Smart Highlights</span>
-                  <span className="text-purple-400 font-semibold">9:16 Kinetic Video</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* ── Section 3: Visual Output Showcase (Editorial Bento) ──────────── */}
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xs uppercase font-mono tracking-[0.2em] text-muted">
-              Artifacts Generated For Every Sermon
-            </h2>
-            <span className="text-[11px] font-mono text-secondary">Zero Manual Cutting Required</span>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
-            {/* Left Artifact: Vertical 9:16 Reel Specimen */}
-            <div className="lg:col-span-7 double-bezel">
-              <div className="double-bezel-inner p-6 space-y-5 h-full flex flex-col justify-between">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <span className="w-2.5 h-2.5 rounded-full bg-orange animate-ping" />
-                    <span className="text-xs font-semibold text-primary">
-                      Vertical Reel · Sacred Typography Specimen
-                    </span>
-                  </div>
-                  <span className="scripture-badge">Isaiah 40:31</span>
-                </div>
-
-                {/* Simulated Screen Card */}
-                <div className="relative rounded-2xl bg-surface-elevated/70 border border-white/10 p-6 sm:p-8 flex flex-col justify-between overflow-hidden shadow-inner space-y-6">
-                  <div className="flex items-center justify-between text-[11px] font-mono text-muted">
-                    <span className="text-orange font-bold">04:12 — 05:45</span>
-                    <span>1m 33s Duration</span>
-                  </div>
-
-                  <div className="space-y-3 text-center max-w-lg mx-auto py-2">
-                    <p className="text-lg sm:text-2xl font-editorial font-bold text-amber-300 leading-snug tracking-tight">
-                      “Those who wait upon the Lord shall renew their strength; they shall mount up
-                      with wings like eagles.”
-                    </p>
-                    <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-orange/10 border border-orange/30 text-orange text-xs font-semibold">
-                      <span>Divine Impartation & Renewal</span>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2 pt-3 border-t border-white/5">
-                    <div className="flex items-center justify-between text-[11px] text-muted font-mono">
-                      <span>Kinetic Subtitles</span>
-                      <span className="text-emerald-400 font-semibold">Synced with Speaker Cadence</span>
-                    </div>
-                    <div className="w-full bg-base h-1.5 rounded-full overflow-hidden">
-                      <div className="bg-gradient-to-r from-orange to-amber-400 h-full w-2/3 rounded-full" />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between text-xs text-secondary">
-                  <div className="flex items-center gap-2">
-                    <i className="bx bx-check-double text-orange text-base" />
-                    <span>Auto-detects high-energy preaching & prayer peaks</span>
-                  </div>
-                  <span className="font-mono text-[11px] text-muted">MP4 1080x1920</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Right Artifact: Topic Chapters & Scripture Breakdown */}
-            <div className="lg:col-span-5 double-bezel">
-              <div className="double-bezel-inner p-6 space-y-5 h-full flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="text-xs font-semibold text-primary">
-                      Structured Sermon Chapters
-                    </span>
-                    <span className="meta-chip">Thematic Shifts</span>
-                  </div>
-                  <p className="text-xs text-secondary leading-relaxed">
-                    Dabar monitors shifts in preaching vocabulary and theological themes to generate
-                    meaningful chapter markers with scripture citations.
-                  </p>
-                </div>
-
-                <div className="space-y-2.5">
-                  <div className="p-3 rounded-xl bg-surface-elevated border border-border space-y-1">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-semibold text-primary">01. The Nature of the Covenant</span>
-                      <span className="font-mono text-[11px] text-orange">00:00 — 12:40</span>
-                    </div>
-                    <p className="text-[11px] text-muted truncate">
-                      Scriptural foundation in Genesis 15 and Romans 4.
-                    </p>
-                  </div>
-
-                  <div className="p-3 rounded-xl bg-surface-elevated border border-orange/40 bg-orange/5 space-y-1">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-semibold text-orange-light">02. Walking in Divine Authority</span>
-                      <span className="font-mono text-[11px] text-orange font-bold">12:40 — 38:15</span>
-                    </div>
-                    <p className="text-[11px] text-secondary truncate">
-                      Exposition on Luke 10:19 · Overcoming obstacles through faith.
-                    </p>
-                  </div>
-
-                  <div className="p-3 rounded-xl bg-surface-elevated border border-border space-y-1">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-semibold text-primary">03. Altar Call & Impartation</span>
-                      <span className="font-mono text-[11px] text-orange">38:15 — 52:00</span>
-                    </div>
-                    <p className="text-[11px] text-muted truncate">
-                      Closing prayer and call to repentance.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="pt-3 border-t border-border flex items-center justify-between text-[11px] font-mono text-muted">
-                  <span>Export Formats</span>
-                  <span className="text-secondary">YouTube Timestamps · Markdown · PDF</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* ── Section 4: Privacy & Bottom Action Card ─────────────────────── */}
-        <div className="double-bezel">
-          <div className="double-bezel-inner p-8 text-center space-y-5">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium">
-              <i className="bx bx-shield-quarter text-sm" />
-              <span>100% Local-First & Private Preaching Archive</span>
-            </div>
-
-            <div className="max-w-xl mx-auto space-y-2">
-              <h3 className="font-editorial text-2xl font-bold text-primary">
-                Ready to transform your church media workflow?
-              </h3>
-              <p className="text-xs sm:text-sm text-secondary">
-                Drop your recorded sermon file or paste a YouTube stream link to immediately begin
-                transcription and clip extraction.
-              </p>
-            </div>
-
-            <div className="pt-2 flex flex-col sm:flex-row items-center justify-center gap-3">
-              <button
-                onClick={() => handleStart("/upload")}
-                className="group inline-flex items-center gap-3 px-8 py-3.5 rounded-full bg-orange hover:bg-orange-hover text-white font-sans text-sm font-semibold transition-all duration-300 shadow-[0_4px_20px_rgba(234,88,12,0.35)] active:scale-[0.98]"
-              >
-                <span>Import a Sermon Now</span>
-                <div className="w-6 h-6 rounded-full bg-white/20 flex items-center justify-center transition-transform duration-300 group-hover:translate-x-1">
-                  <i className="bx bx-upload text-sm text-white" />
-                </div>
-              </button>
-
-              <button
-                onClick={() => handleStart("/dashboard")}
-                className="px-6 py-3.5 rounded-full bg-surface hover:bg-surface-hover border border-border text-secondary hover:text-primary text-sm font-medium transition-colors"
-              >
-                Enter Sermon Library
-              </button>
-            </div>
+            <button
+              onClick={() => handleStart("/dashboard")}
+              className="px-6 py-3 rounded-full bg-surface-elevated hover:bg-surface-hover border border-border text-secondary hover:text-primary text-sm font-medium transition-colors"
+            >
+              Open Sermon Library
+            </button>
           </div>
         </div>
       </main>
 
       {/* ── Footer ──────────────────────────────────────────────────────── */}
-      <footer className="w-full px-6 sm:px-12 py-6 border-t border-border/40 backdrop-blur-md bg-surface/20">
-        <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-muted">
-          <p>© 2026 DABAAR Studio · Private Preaching Intelligence System</p>
+      <footer className="w-full px-6 sm:px-12 py-6 border-t border-border/60 backdrop-blur-md bg-surface/20">
+        <div className="max-w-4xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-muted">
+          <p>© 2026 DABAR · Sermon Media Studio</p>
           <div className="flex items-center gap-4">
-            <span className="font-mono text-[11px] text-orange">v0.2.0</span>
+            <span className="font-mono text-[11px] text-accent">v0.2.0</span>
             <span className="text-border">|</span>
-            <span>Local Neural Core</span>
+            <span>Simple, Fast & Private</span>
           </div>
         </div>
       </footer>

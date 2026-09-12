@@ -328,12 +328,12 @@ export default function Upload() {
                 {isProcessing ? (
                   <>
                     <i className="bx bx-loader-alt bx-spin text-base" />
-                    <span>Initiating Pipeline…</span>
+                    <span>Processing sermon…</span>
                   </>
                 ) : (
                   <>
                     <i className="bx bx-zap text-base" />
-                    <span>Start Transcription & Clip Extraction</span>
+                    <span>Transcribe & Create Clips</span>
                   </>
                 )}
               </Btn>

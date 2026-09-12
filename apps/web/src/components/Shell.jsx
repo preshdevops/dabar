@@ -5,25 +5,25 @@ export default function Shell() {
   const { theme, toggleTheme } = useTheme();
 
   return (
-    <div className="min-h-screen bg-base text-primary relative selection:bg-orange/20">
+    <div className="min-h-screen bg-base text-primary relative selection:bg-accent/20">
       {/* ── Studio Navigation Bar ───────────────────────────────────── */}
       <header className="sticky top-0 z-50 px-4 pt-3 pb-2 sm:px-6 bg-base/95 backdrop-blur-md border-b border-border">
         <nav
           className="mx-auto max-w-6xl flex items-center justify-between gap-4"
           aria-label="Studio Master Navigation"
         >
-          {/* Brand Seal — Unified Architectural DABAAR Monogram with Warm Orange Touch */}
+          {/* Brand Seal */}
           <NavLink to="/dashboard" className="flex items-center gap-3 group">
             <div className="w-8 h-8 rounded-lg bg-surface-elevated border border-border text-primary flex items-center justify-center font-editorial font-bold text-base shadow-sm transition-transform group-hover:scale-105 relative">
-              <span>ד</span>
-              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-orange ring-1 ring-base" />
+              <span className="text-accent">ד</span>
+              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent ring-1 ring-base" />
             </div>
             <div className="flex flex-col">
-              <span className="font-editorial text-lg font-bold tracking-tight text-primary leading-none group-hover:text-orange transition-colors">
-                DABAAR
+              <span className="font-editorial text-lg font-bold tracking-tight text-primary leading-none group-hover:text-accent transition-colors">
+                DABAR
               </span>
-              <span className="text-[10px] text-orange font-medium mt-0.5 tracking-wider">
-                Preaching Studio
+              <span className="text-[10px] text-muted font-medium mt-0.5 tracking-wider">
+                Sermon Media Studio
               </span>
             </div>
           </NavLink>
@@ -35,7 +35,7 @@ export default function Shell() {
               className={({ isActive }) =>
                 `px-3.5 py-1.5 rounded-lg text-xs font-semibold tracking-tight transition-all flex items-center gap-1.5 ${
                   isActive
-                    ? "bg-accent text-white shadow-xs"
+                    ? "bg-accent text-accent-fg shadow-xs"
                     : "text-secondary hover:text-primary hover:bg-surface-hover"
                 }`
               }
@@ -49,7 +49,7 @@ export default function Shell() {
               className={({ isActive }) =>
                 `px-3.5 py-1.5 rounded-lg text-xs font-semibold tracking-tight transition-all flex items-center gap-1.5 ${
                   isActive
-                    ? "bg-accent text-white shadow-xs"
+                    ? "bg-accent text-accent-fg shadow-xs"
                     : "text-secondary hover:text-primary hover:bg-surface-hover"
                 }`
               }
@@ -63,7 +63,7 @@ export default function Shell() {
               className={({ isActive }) =>
                 `px-3.5 py-1.5 rounded-lg text-xs font-semibold tracking-tight transition-all flex items-center gap-1.5 ${
                   isActive
-                    ? "bg-accent text-white shadow-xs"
+                    ? "bg-accent text-accent-fg shadow-xs"
                     : "text-secondary hover:text-primary hover:bg-surface-hover"
                 }`
               }
@@ -77,11 +77,11 @@ export default function Shell() {
           <div className="flex items-center gap-2">
             <NavLink
               to="/onboarding"
-              className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-secondary hover:text-primary bg-surface border border-border hover:border-orange/40 transition-all"
-              title="Tour & Scripture Sandbox"
+              className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-secondary hover:text-primary bg-surface border border-border hover:border-accent-border transition-all"
+              title="Overview & Feature Tour"
             >
-              <i className="bx bx-book-open text-orange" />
-              <span>Scripture Lab</span>
+              <i className="bx bx-compass text-accent" />
+              <span>Tour</span>
             </NavLink>
 
             <button

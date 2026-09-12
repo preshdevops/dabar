@@ -232,7 +232,7 @@ export default function Processing() {
                   </p>
                 </div>
                 <div className="flex items-center justify-center gap-3 pt-2">
-                  <Btn variant="orange" size="md" onClick={() => navigate("/upload")} icon="bx-upload">
+                  <Btn variant="primary" size="md" onClick={() => navigate("/upload")} icon="bx-upload">
                     Import Another Sermon
                   </Btn>
                   <Btn variant="secondary" size="md" onClick={() => navigate("/dashboard")} icon="bx-arrow-back">
@@ -246,7 +246,7 @@ export default function Processing() {
                 <div className="flex items-start justify-between gap-4">
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-orange" />
+                      <span className="w-2 h-2 rounded-full bg-accent" />
                       <span className="text-xs font-semibold text-primary">
                         Step {stageIndex + 1} of 4 · {activeStageObj.label}
                       </span>
@@ -257,7 +257,7 @@ export default function Processing() {
                   </div>
 
                   <div className="text-right shrink-0">
-                    <span className="text-2xl font-bold text-orange font-editorial">
+                    <span className="text-2xl font-bold text-accent font-editorial">
                       {progressState.percent}%
                     </span>
                   </div>
@@ -272,7 +272,7 @@ export default function Processing() {
                     return (
                       <div
                         key={i}
-                        className="flex-1 bg-gradient-to-t from-blue-600 to-orange rounded-full transition-all duration-300"
+                        className="flex-1 bg-accent rounded-full transition-all duration-300"
                         style={{
                           height: isComplete ? "20%" : `${Math.max(15, (baseHeight + (Math.sin(elapsedSeconds * 3 + i) * 30)))}%`,
                           opacity: isComplete ? 0.3 : 0.5 + (i % 3) * 0.25,
@@ -287,7 +287,7 @@ export default function Processing() {
                 <div className="space-y-2">
                   <div className="w-full bg-surface-elevated h-2.5 rounded-full overflow-hidden border border-border">
                     <div
-                      className="bg-gradient-to-r from-blue-600 to-orange h-full rounded-full transition-all duration-500 ease-out"
+                      className="bg-accent h-full rounded-full transition-all duration-500 ease-out"
                       style={{ width: `${progressState.percent}%` }}
                     />
                   </div>
@@ -400,7 +400,7 @@ export default function Processing() {
                 <span>Read Transcript</span>
               </Btn>
               <Btn
-                variant="orange"
+                variant="primary"
                 size="lg"
                 className="flex-1"
                 onClick={() => navigate(`/clips/${sermonId}`)}
@@ -414,7 +414,7 @@ export default function Processing() {
               <button
                 type="button"
                 onClick={() => navigate("/dashboard")}
-                className="text-secondary hover:text-orange font-medium underline underline-offset-4 transition-colors"
+                className="text-secondary hover:text-primary font-medium underline underline-offset-4 transition-colors"
               >
                 ← Return to Library (runs in background)
               </button>

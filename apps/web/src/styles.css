@@ -16,18 +16,18 @@ html.dark {
   --border-base: rgba(255, 255, 255, 0.08);
   --border-strong: rgba(255, 255, 255, 0.15);
   --border-subtle: rgba(255, 255, 255, 0.04);
-  --border-focus: #3B82F6;
+  --border-focus: #D4913A;
 
   --text-primary: #F9FAFB;
   --text-secondary: #9CA3AF;
   --text-muted: #6B7280;
 
-  /* Restrained Royal Cobalt */
-  --accent: #2563EB;
-  --accent-hover: #1D4ED8;
+  /* Dabar Warm Amber */
+  --accent: #D4913A;
+  --accent-hover: #B87325;
   --accent-fg: #FFFFFF;
-  --accent-muted: rgba(37, 99, 235, 0.12);
-  --accent-border: rgba(37, 99, 235, 0.30);
+  --accent-muted: rgba(212, 145, 58, 0.12);
+  --accent-border: rgba(212, 145, 58, 0.30);
 
   /* Warm Sacred Orange / Flame Accent (Precise, not blurry) */
   --orange: #EA580C;
@@ -59,17 +59,17 @@ html.light {
   --border-base: rgba(15, 23, 42, 0.08);
   --border-strong: rgba(15, 23, 42, 0.16);
   --border-subtle: rgba(15, 23, 42, 0.04);
-  --border-focus: #2563EB;
+  --border-focus: #D4913A;
 
   --text-primary: #0F172A;
   --text-secondary: #475569;
   --text-muted: #64748B;
 
-  --accent: #1D4ED8;
-  --accent-hover: #1E40AF;
+  --accent: #D4913A;
+  --accent-hover: #B87325;
   --accent-fg: #FFFFFF;
-  --accent-muted: rgba(29, 78, 216, 0.08);
-  --accent-border: rgba(29, 78, 216, 0.22);
+  --accent-muted: rgba(212, 145, 58, 0.10);
+  --accent-border: rgba(212, 145, 58, 0.24);
 
   --orange: #EA580C;
   --orange-hover: #C2410C;
@@ -107,8 +107,8 @@ html.light {
 
   h1, h2, h3, h4, h5 {
     color: var(--text-primary);
-    font-family: "Newsreader", Georgia, serif;
-    letter-spacing: -0.015em;
+    font-family: "Fraunces", Georgia, serif;
+    letter-spacing: 0;
     line-height: 1.25;
   }
 
@@ -222,14 +222,14 @@ html.light {
 }
 
 .btn-studio-primary {
-  background-color: #2563EB;
+  background-color: #D4913A;
   color: #FFFFFF;
   border: 1px solid rgba(255, 255, 255, 0.16);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.20), 0 2px 6px rgba(0, 0, 0, 0.3);
 }
 
 .btn-studio-primary:hover {
-  background-color: #1D4ED8;
+  background-color: #B87325;
   border-color: rgba(255, 255, 255, 0.24);
 }
 

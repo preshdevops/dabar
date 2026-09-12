@@ -1,5 +1,13 @@
 import Btn from "./Btn.jsx";
 
+function formatClipTime(seconds) {
+  if (typeof seconds !== "number" || isNaN(seconds)) return "00:00";
+  const safe = Math.max(0, seconds);
+  const m = Math.floor(safe / 60);
+  const s = Math.floor(safe % 60);
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
 function friendlyDuration(durationStr) {
   if (!durationStr) return "Clip";
   if (durationStr.includes("–") || durationStr.includes("-")) {
@@ -23,10 +31,53 @@ export default function ClipCard({
   clip,
   onPreview,
   onExport,
+  onNudge,
   isExporting,
   featured = false,
 }) {
   const durationLabel = friendlyDuration(clip.duration);
+  const canNudge = Boolean(onNudge && typeof clip.start === "number" && typeof clip.end === "number");
+
+  const boundaryNudges = canNudge ? (
+    <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
+      {[
+        { key: "start", label: "Start", value: clip.start },
+        { key: "end", label: "End", value: clip.end },
+      ].map((boundary) => (
+        <div
+          key={boundary.key}
+          className="rounded-md border border-border bg-surface-elevated px-2 py-1.5 space-y-1"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-muted">{boundary.label}</span>
+            <span className="font-semibold text-primary">
+              {formatClipTime(boundary.value)}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-1">
+            <button
+              type="button"
+              onClick={() => onNudge(clip, boundary.key, -1)}
+              className="h-6 rounded border border-border bg-surface hover:bg-surface-hover text-primary transition-colors"
+              aria-label={`Move ${boundary.label.toLowerCase()} earlier by 1 second`}
+              title={`Move ${boundary.label.toLowerCase()} earlier by 1 second`}
+            >
+              -1s
+            </button>
+            <button
+              type="button"
+              onClick={() => onNudge(clip, boundary.key, 1)}
+              className="h-6 rounded border border-border bg-surface hover:bg-surface-hover text-primary transition-colors"
+              aria-label={`Move ${boundary.label.toLowerCase()} later by 1 second`}
+              title={`Move ${boundary.label.toLowerCase()} later by 1 second`}
+            >
+              +1s
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  ) : null;
 
   if (featured) {
     return (
@@ -67,6 +118,8 @@ export default function ClipCard({
             </p>
           </div>
         )}
+
+        {boundaryNudges}
 
         {/* Footer CTAs */}
         <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-border">
@@ -127,6 +180,8 @@ export default function ClipCard({
             "{clip.why}"
           </p>
         )}
+
+        {boundaryNudges}
       </div>
 
       {/* Action Buttons */}

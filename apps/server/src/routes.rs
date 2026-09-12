@@ -94,7 +94,9 @@ async fn create_sermon(
                 tracing::error!("Sermon pipeline failed for sermon {sermon_id}: {err:?}");
             }
             if let Err(db_err) = state_clone.mark_failed(sermon_id, &err_msg).await {
-                tracing::error!("Failed to record sermon failure in DB for {sermon_id}: {db_err:?}");
+                tracing::error!(
+                    "Failed to record sermon failure in DB for {sermon_id}: {db_err:?}"
+                );
             }
         }
     });
@@ -102,27 +104,50 @@ async fn create_sermon(
     (StatusCode::CREATED, Json(sermon)).into_response()
 }
 
-async fn run_pipeline(
-    state: AppState,
-    sermon_id: Uuid,
-    youtube_url: String,
-) -> anyhow::Result<()> {
-    let api_key = std::env::var("GROQ_API_KEY")
-        .map_err(|_| anyhow::anyhow!("GROQ_API_KEY environment variable is not set"))?;
+async fn run_pipeline(state: AppState, sermon_id: Uuid, youtube_url: String) -> anyhow::Result<()> {
+    let groq_key = std::env::var("GROQ_API_KEY")
+        .ok()
+        .filter(|k| !k.trim().is_empty());
+    let deepgram_key = std::env::var("DEEPGRAM_API_KEY")
+        .ok()
+        .filter(|k| !k.trim().is_empty());
+
+    let (api_key, backend) = match (groq_key, deepgram_key) {
+        (Some(gk), _) => (
+            gk.clone(),
+            dabar_core::whisper::TranscriptionBackend::Groq { api_key: gk },
+        ),
+        (None, Some(dk)) => (
+            dk.clone(),
+            dabar_core::whisper::TranscriptionBackend::Deepgram { api_key: dk },
+        ),
+        (None, None) => {
+            anyhow::bail!("Neither GROQ_API_KEY nor DEEPGRAM_API_KEY environment variable is set")
+        }
+    };
+
+    tracing::info!("🚀 [Pipeline Start] Processing sermon {sermon_id} from {youtube_url}");
 
     // Stage 1: Downloading
-    state.update_status(sermon_id, dabar_core::SermonStatus::Downloading).await?;
+    tracing::info!("📥 [Stage 1/4: Downloading] Downloading audio from YouTube...");
+    state
+        .update_status(sermon_id, dabar_core::SermonStatus::Downloading)
+        .await?;
     let temp_dir = std::env::temp_dir().join(format!("dabar_{sermon_id}"));
-    let downloaded = dabar_core::downloader::download_youtube_audio(&youtube_url, &temp_dir).await?;
+    let downloaded =
+        dabar_core::downloader::download_youtube_audio(&youtube_url, &temp_dir).await?;
 
     if let Some(title) = &downloaded.title {
         let _ = state.update_title(sermon_id, title).await;
     }
 
     // Stage 2: Transcribing
-    state.update_status(sermon_id, dabar_core::SermonStatus::Transcribing).await?;
-    let backend = dabar_core::whisper::TranscriptionBackend::Groq { api_key: api_key.clone() };
-    let trans_res = dabar_core::whisper::transcribe_audio(&backend, &downloaded.path, None, None).await?;
+    tracing::info!("🎙️ [Stage 2/4: Transcribing] Transcribing sermon audio...");
+    state
+        .update_status(sermon_id, dabar_core::SermonStatus::Transcribing)
+        .await?;
+    let trans_res =
+        dabar_core::whisper::transcribe_audio(&backend, &downloaded.path, None, None).await?;
     let segments = trans_res.segments;
 
     // Clean up temporary audio file asynchronously
@@ -133,11 +158,17 @@ async fn run_pipeline(
     }
 
     // Stage 3: Highlight Detection (LLM analysis with [HH:MM:SS] prompt formatting & 30-90s validation)
-    state.update_status(sermon_id, dabar_core::SermonStatus::Detecting).await?;
+    tracing::info!(
+        "🧠 [Stage 3/4: Highlight Detection] Extracting key pastoral moments with LLM..."
+    );
+    state
+        .update_status(sermon_id, dabar_core::SermonStatus::Detecting)
+        .await?;
     let analysis = dabar_core::llm::analyze_sermon(Some(&api_key), &segments).await?;
     let highlights = analysis.highlights_report.highlights;
 
     // Stage 4: Commit Ready State & Save Results to DB
+    tracing::info!("💾 [Stage 4/4: Persistence] Saving sermon metadata, manuscript, and highlights to database...");
     state
         .save_sermon_results(
             sermon_id,
@@ -147,7 +178,7 @@ async fn run_pipeline(
         )
         .await?;
 
-    tracing::info!("Sermon {sermon_id} pipeline completed successfully!");
+    tracing::info!("🎉 [Pipeline Complete] Sermon {sermon_id} pipeline completed successfully!");
     Ok(())
 }
 
@@ -178,10 +209,7 @@ async fn queue_transcription(
     }
 }
 
-async fn download_clip_by_id(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Response {
+async fn download_clip_by_id(State(state): State<AppState>, Path(id): Path<Uuid>) -> Response {
     let (highlight, sermon) = match state.get_highlight_with_sermon(id).await {
         Ok(Some(pair)) => pair,
         Ok(None) => return not_found("Clip highlight not found."),
@@ -239,10 +267,9 @@ async fn download_clip_by_id(
 
     let filename = format!("clip-{id}.mp4");
     let mut response = (StatusCode::OK, bytes).into_response();
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("video/mp4"),
-    );
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("video/mp4"));
     response.headers_mut().insert(
         header::CONTENT_DISPOSITION,
         HeaderValue::from_str(&format!("attachment; filename=\"{filename}\"")).unwrap_or_else(
@@ -264,7 +291,10 @@ async fn download_clip_by_query(Query(query): Query<DownloadClipQuery>) -> Respo
     let stream_url = match dabar_core::downloader::resolve_stream_url(&query.url).await {
         Ok(url) => url,
         Err(err) => {
-            tracing::error!("Stream resolution failed for query clip {}: {err:?}", query.url);
+            tracing::error!(
+                "Stream resolution failed for query clip {}: {err:?}",
+                query.url
+            );
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ApiError {
@@ -277,16 +307,15 @@ async fn download_clip_by_query(Query(query): Query<DownloadClipQuery>) -> Respo
 
     let clip_id = Uuid::new_v4();
     let temp_path = std::env::temp_dir().join(format!("clip_{clip_id}.mp4"));
-    let extract_res = dabar_core::ffmpeg::extract_vertical_clip(
-        &stream_url,
-        &temp_path,
-        query.start,
-        query.end,
-    )
-    .await;
+    let extract_res =
+        dabar_core::ffmpeg::extract_vertical_clip(&stream_url, &temp_path, query.start, query.end)
+            .await;
 
     if let Err(err) = extract_res {
-        tracing::error!("FFmpeg query clip extraction failed for {}: {err:?}", query.url);
+        tracing::error!(
+            "FFmpeg query clip extraction failed for {}: {err:?}",
+            query.url
+        );
         let _ = tokio::fs::remove_file(&temp_path).await;
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -309,10 +338,9 @@ async fn download_clip_by_query(Query(query): Query<DownloadClipQuery>) -> Respo
 
     let filename = format!("dabar-clip-{:.0}s.mp4", query.start.max(0.0));
     let mut response = (StatusCode::OK, bytes).into_response();
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("video/mp4"),
-    );
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("video/mp4"));
     response.headers_mut().insert(
         header::CONTENT_DISPOSITION,
         HeaderValue::from_str(&format!("attachment; filename=\"{filename}\"")).unwrap_or_else(

@@ -26,14 +26,14 @@ Dabar is a sermon audio processing and illumination app with a **Rust / Tauri v2
 
 ---
 
-## 1. Primary Pipeline: Groq Whisper + LLM Moment Detection
+## 1. Primary Pipeline: Groq Whisper + Deepgram Nova-3 + GPT-OSS 120B
 
-Dabar defaults to **Groq Whisper (`whisper-large-v3-turbo`)** combined with **Groq LLM pastoral moment detection (`llama-3.3-70b-versatile`)**.
+Dabar defaults to **Groq Whisper (`whisper-large-v3-turbo`)** with **Deepgram Nova-3** as automatic fallback, combined with **GPT-OSS 120B pastoral moment detection (`openai/gpt-oss-120b`)**.
 
-### Why Groq is Primary:
-- **Speech Recognition Accuracy**: Whisper Large v3 Turbo exhibits superior phonetic recognition and context handling on Nigerian-accented English, West African cadences, and bilingual code-switching with Yoruba (e.g. liturgical interjections, songs, cultural expressions).
-- **Speed & Wall-Clock Efficiency**: Parallel chunked cloud transcription completes in ~5–10 seconds for a full 60–90 minute sermon, eliminating AssemblyAI's server-side queueing and 15-minute polling loop bottleneck.
-- **Accurate Pastoral Highlights**: LLM highlight detection analyzes timestamped transcript segments to identify high-impact, standalone 30–90 second teaching moments with verified theological depth and duration bounds.
+### Why Groq & Deepgram Nova-3:
+- **Speech Recognition Accuracy**: Whisper Large v3 Turbo and Deepgram Nova-3 exhibit superior phonetic recognition and context handling on Nigerian-accented English, West African cadences, and bilingual code-switching with Yoruba (e.g. liturgical interjections, songs, cultural expressions).
+- **Speed & Wall-Clock Efficiency**: Parallel chunked cloud transcription completes in ~5–10 seconds for a full 60–90 minute sermon, eliminating server-side queueing and polling bottlenecks.
+- **Accurate Pastoral Highlights**: LLM highlight detection analyzes timestamped transcript segments using GPT-OSS 120B on Groq to identify high-impact, standalone 30–90 second teaching moments with verified theological depth and duration bounds.
 
 ### Step-by-Step Execution:
 1. **Audio Ingestion**:
@@ -43,13 +43,13 @@ Dabar defaults to **Groq Whisper (`whisper-large-v3-turbo`)** combined with **Gr
 
 2. **FFmpeg Preprocessing**:
    - Audio is transcoded to 16kHz mono 32kbps MP3 (`preprocess_audio_for_whisper`).
-   - Slashes payload size to ~14.4MB per hour of audio, guaranteeing compatibility with Groq's 25MB request limit.
+   - Slashes payload size to ~14.4MB per hour of audio, guaranteeing compatibility with Groq's 25MB request limit and Deepgram.
 
-3. **Transcription (`whisper-large-v3-turbo`)**:
+3. **Transcription (`whisper-large-v3-turbo` / Deepgram `nova-3`)**:
    - For long sermons (or files exceeding size limits), audio is sliced into overlapping chunks and transcribed concurrently using `tokio::task::JoinSet`.
    - Overlap trimming (`stitch_transcript_chunks`) reconstructs seamless sentence-level `TranscriptSegment`s with absolute timeline alignment.
 
-4. **Highlight Detection (`llama-3.3-70b-versatile`)**:
+4. **Highlight Detection (`openai/gpt-oss-120b`)**:
    - Formats timestamped transcript segments into an inline prompt: `[HH:MM:SS] Segment text...`.
    - Prompts the LLM under pastoral editorial guidelines for 30–90 second clips.
    - Validates timestamps, ensures duration bounds (25s–120s with 90s clamping), and produces structured `Highlight` records.

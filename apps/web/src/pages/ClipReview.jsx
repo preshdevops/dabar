@@ -54,6 +54,7 @@ export default function ClipReview() {
   const [isRetryingHighlights, setIsRetryingHighlights] = useState(false);
   const [customRange, setCustomRange] = useState({ start: 0, end: 60, title: "Custom Moment" });
   const [showCustomRangeModal, setShowCustomRangeModal] = useState(false);
+  const [clipRange, setClipRange] = useState({ start: null, end: null });
 
   useEffect(() => {
     let mounted = true;
@@ -184,6 +185,72 @@ export default function ClipReview() {
     });
   }
 
+  const totalDurationSecs = useMemo(() => {
+    if (segments.length > 0) {
+      const last = segments[segments.length - 1];
+      if (last?.end) return Math.max(1, last.end);
+    }
+    if (sermonDuration && sermonDuration.includes(":")) {
+      const parts = sermonDuration.split(":").map(Number);
+      if (parts.length === 2) return parts[0] * 60 + parts[1];
+      if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    }
+    return 2700;
+  }, [segments, sermonDuration]);
+
+  function handleNudgeClipBoundary(clip, boundary, delta) {
+    if (!clip) return;
+    setHighlights((prev) =>
+      prev.map((item) => {
+        if (item.id !== clip.id) return item;
+        let newStart = item.start;
+        let newEnd = item.end;
+        if (boundary === "start") {
+          newStart = Math.max(0, item.start + delta);
+          if (newStart >= newEnd) newStart = Math.max(0, newEnd - 1);
+        } else if (boundary === "end") {
+          newEnd = Math.max(newStart + 1, item.end + delta);
+        }
+        const updated = {
+          ...item,
+          start: newStart,
+          end: newEnd,
+          duration: `${formatSeconds(newStart)} – ${formatSeconds(newEnd)}`,
+        };
+        if (activeSegment?.id === item.id) {
+          setActiveSegment(updated);
+        }
+        if (exportModalClip?.id === item.id) {
+          setExportModalClip(updated);
+        }
+        return updated;
+      })
+    );
+  }
+
+  function handleSetRangeStart(time) {
+    setClipRange((prev) => {
+      const newStart = Math.max(0, time);
+      const newEnd = prev.end !== null && prev.end <= newStart ? null : prev.end;
+      return { start: newStart, end: newEnd };
+    });
+  }
+
+  function handleSetRangeEnd(time) {
+    setClipRange((prev) => {
+      const newEnd = Math.max(0, time);
+      const newStart = prev.start !== null ? prev.start : 0;
+      if (newEnd > newStart) {
+        setCustomRange({
+          start: newStart,
+          end: newEnd,
+          title: `${sermonTitle || "Sermon"} (${formatSeconds(newStart)} - ${formatSeconds(newEnd)})`,
+        });
+      }
+      return { start: newStart, end: newEnd };
+    });
+  }
+
   async function handleConfirmExport(clip, format, captionStyle, fileName) {
     if (!currentSermonId || !clip) return;
     const clipKey = clip.id || `clip-${clip.start}`;
@@ -196,14 +263,15 @@ export default function ClipReview() {
         clip.id,
         clip.start,
         clip.end,
-        fileName || clip.highlight_title || clip.title
+        fileName || clip.highlight_title || clip.title,
+        format,
+        captionStyle
       );
 
       setExportedNotice({
         title: clip.highlight_title || clip.title || fileName || "Clip",
         path: outputPath,
       });
-      setExportModalClip(null);
     } catch (err) {
       const msg = err?.message || String(err);
       setRenderError(msg);
@@ -221,7 +289,9 @@ export default function ClipReview() {
         currentSermonId,
         customRange.start,
         customRange.end,
-        customRange.title
+        customRange.title,
+        customRange.aspectRatio || "9:16",
+        customRange.captionStyle || "amber"
       );
       setExportedNotice({
         title: customRange.title || "Custom Clip",
@@ -460,6 +530,7 @@ export default function ClipReview() {
                 featured={true}
                 onPreview={(c) => setActiveSegment(c)}
                 onExport={(c) => setExportModalClip(c)}
+                onNudge={handleNudgeClipBoundary}
                 isExporting={renderingClipId === topMoment.id}
               />
             </section>
@@ -479,6 +550,7 @@ export default function ClipReview() {
                     clip={moment}
                     onPreview={(c) => setActiveSegment(c)}
                     onExport={(c) => setExportModalClip(c)}
+                    onNudge={handleNudgeClipBoundary}
                     isExporting={renderingClipId === moment.id}
                   />
                 ))}
@@ -603,6 +675,10 @@ export default function ClipReview() {
               segments={filteredSegments}
               currentTime={playbackTime}
               isPlaying={isPlaying}
+              clipRange={clipRange}
+              selectionMode={true}
+              onSetRangeStart={handleSetRangeStart}
+              onSetRangeEnd={handleSetRangeEnd}
               onSeek={handleSeek}
               onTogglePlay={handleTogglePlay}
               onUpdateSegmentText={handleUpdateSegmentText}
@@ -639,12 +715,12 @@ export default function ClipReview() {
             const rect = e.currentTarget.getBoundingClientRect();
             const clickX = e.clientX - rect.left;
             const ratio = clickX / rect.width;
-            handleSeek(ratio * 2700);
+            handleSeek(ratio * totalDurationSecs);
           }}
         >
           <div
             className="h-full bg-accent rounded-full transition-all"
-            style={{ width: `${Math.min(100, (playbackTime / 2700) * 100)}%` }}
+            style={{ width: `${Math.min(100, (playbackTime / totalDurationSecs) * 100)}%` }}
           />
         </div>
 
