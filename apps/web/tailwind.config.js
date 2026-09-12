@@ -6,7 +6,8 @@ export default {
     extend: {
       fontFamily: {
         sans: ['"Plus Jakarta Sans"', "system-ui", "-apple-system", "sans-serif"],
-        editorial: ['"Newsreader"', "Georgia", "serif"],
+        editorial: ['"Fraunces"', "Georgia", "serif"],
+        serif: ['"Source Serif 4"', "Georgia", "serif"],
         mono: ['"JetBrains Mono"', '"IBM Plex Mono"', "Menlo", "Monaco", "monospace"],
       },
       colors: {
@@ -24,6 +25,7 @@ export default {
         accent: "var(--accent)",
         "accent-hover": "var(--accent-hover)",
         "accent-muted": "var(--accent-muted)",
+        "accent-border": "var(--accent-border)",
         "accent-glow": "var(--accent-glow)",
         "accent-fg": "var(--accent-fg)",
         success: "var(--success)",

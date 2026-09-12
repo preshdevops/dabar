@@ -83,7 +83,11 @@ async fn start_pipeline(
     let mut sermon = sermon;
     sermon.title = title;
 
-    state.db.insert_sermon(&sermon).await.map_err(|e| e.to_string())?;
+    state
+        .db
+        .insert_sermon(&sermon)
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Read settings for API keys and transcription backend choice
     let groq_api_key = state
@@ -95,33 +99,71 @@ async fn start_pipeline(
         .or_else(|| std::env::var("GROQ_API_KEY").ok())
         .unwrap_or_default();
 
-    let offline_mode = state
+    let deepgram_api_key = state
         .db
-        .get_setting("offline_mode")
+        .get_setting("deepgram_api_key")
         .await
         .ok()
         .flatten()
-        .unwrap_or_default()
-        == "true";
+        .or_else(|| std::env::var("DEEPGRAM_API_KEY").ok())
+        .unwrap_or_default();
 
-    let transcription_backend = if offline_mode || groq_api_key.trim().is_empty() {
-        let model_path = {
-            let model_name = state
-                .db
-                .get_setting("offline_model")
-                .await
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| "tiny".to_string());
-            let filename = format!("ggml-{model_name}.bin");
-            state.app_data_dir.join("whisper-models").join(filename)
+    let openai_api_key = state
+        .db
+        .get_setting("openai_api_key")
+        .await
+        .ok()
+        .flatten()
+        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+        .unwrap_or_default();
+
+    let backend_choice = state
+        .db
+        .get_setting("transcription_backend")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+
+    let (active_api_key, transcription_backend) =
+        if backend_choice == "deepgram" && !deepgram_api_key.trim().is_empty() {
+            let llm_key = if !groq_api_key.trim().is_empty() {
+                groq_api_key.clone()
+            } else if !openai_api_key.trim().is_empty() {
+                openai_api_key.clone()
+            } else {
+                deepgram_api_key.clone()
+            };
+            (
+                llm_key,
+                dabar_core::whisper::TranscriptionBackend::Deepgram {
+                    api_key: deepgram_api_key.clone(),
+                },
+            )
+        } else if !groq_api_key.trim().is_empty() {
+            (
+                groq_api_key.clone(),
+                dabar_core::whisper::TranscriptionBackend::Groq {
+                    api_key: groq_api_key.clone(),
+                },
+            )
+        } else if !deepgram_api_key.trim().is_empty() {
+            let llm_key = if !openai_api_key.trim().is_empty() {
+                openai_api_key.clone()
+            } else {
+                deepgram_api_key.clone()
+            };
+            (
+                llm_key,
+                dabar_core::whisper::TranscriptionBackend::Deepgram {
+                    api_key: deepgram_api_key.clone(),
+                },
+            )
+        } else {
+            return Err(
+                "No AI API key configured. Please set your Groq API key in Settings.".to_string(),
+            );
         };
-        dabar_core::whisper::TranscriptionBackend::Local { model_path }
-    } else {
-        dabar_core::whisper::TranscriptionBackend::Groq {
-            api_key: groq_api_key.clone(),
-        }
-    };
 
     // Read Ollama settings for offline LLM highlight detection
     let ollama_url = state
@@ -150,7 +192,7 @@ async fn start_pipeline(
             db_clone.clone(),
             sermon_id,
             pipeline_source,
-            groq_api_key,
+            active_api_key,
             transcription_backend,
             app_data_dir_clone,
             ollama_url,
@@ -244,6 +286,8 @@ async fn render_clip(
     start_time: Option<f32>,
     end_time: Option<f32>,
     clip_title: Option<String>,
+    aspect_ratio: Option<String>,
+    caption_style: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let sermon_uuid = Uuid::parse_str(&sermon_id).map_err(|e| format!("Invalid sermon ID: {e}"))?;
@@ -269,14 +313,22 @@ async fn render_clip(
         });
 
     let effective_id_str = highlight_id.or(clip_id);
-    let maybe_uuid = effective_id_str.as_deref().and_then(|s| Uuid::parse_str(s).ok());
+    let maybe_uuid = effective_id_str
+        .as_deref()
+        .and_then(|s| Uuid::parse_str(s).ok());
 
     // 1. If we have a valid UUID that matches a sermon highlight:
     if let Some(h_id) = maybe_uuid {
         if sermon.highlights.iter().any(|h| h.id == h_id) {
-            let output_path = pipeline::render_clip_to_disk(&sermon, h_id, &output_dir)
-                .await
-                .map_err(|e| e.to_string())?;
+            let output_path = pipeline::render_clip_to_disk(
+                &sermon,
+                h_id,
+                &output_dir,
+                aspect_ratio.as_deref(),
+                caption_style.as_deref(),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
             return Ok(output_path.to_string_lossy().to_string());
         }
         // If matches a chapter ID:
@@ -287,6 +339,8 @@ async fn render_clip(
                 ch.end_time,
                 Some(&ch.title),
                 &output_dir,
+                aspect_ratio.as_deref(),
+                caption_style.as_deref(),
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -302,6 +356,8 @@ async fn render_clip(
             end,
             clip_title.as_deref(),
             &output_dir,
+            aspect_ratio.as_deref(),
+            caption_style.as_deref(),
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -310,9 +366,15 @@ async fn render_clip(
 
     // 3. If there is at least one highlight in the sermon:
     if let Some(first_hl) = sermon.highlights.first() {
-        let output_path = pipeline::render_clip_to_disk(&sermon, first_hl.id, &output_dir)
-            .await
-            .map_err(|e| e.to_string())?;
+        let output_path = pipeline::render_clip_to_disk(
+            &sermon,
+            first_hl.id,
+            &output_dir,
+            aspect_ratio.as_deref(),
+            caption_style.as_deref(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         return Ok(output_path.to_string_lossy().to_string());
     }
 
@@ -325,6 +387,8 @@ async fn render_clip_range(
     start_time: f32,
     end_time: f32,
     clip_title: Option<String>,
+    aspect_ratio: Option<String>,
+    caption_style: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let sermon_id = Uuid::parse_str(&sermon_id).map_err(|e| e.to_string())?;
@@ -355,6 +419,8 @@ async fn render_clip_range(
         end_time,
         clip_title.as_deref(),
         &output_dir,
+        aspect_ratio.as_deref(),
+        caption_style.as_deref(),
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -365,7 +431,30 @@ async fn render_clip_range(
 /// Get all user settings as a serializable map.
 #[tauri::command]
 async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
-    let groq_api_key = state.db.get_setting("groq_api_key").await.ok().flatten().unwrap_or_default();
+    let groq_api_key = state
+        .db
+        .get_setting("groq_api_key")
+        .await
+        .ok()
+        .flatten()
+        .or_else(|| std::env::var("GROQ_API_KEY").ok())
+        .unwrap_or_default();
+    let deepgram_api_key = state
+        .db
+        .get_setting("deepgram_api_key")
+        .await
+        .ok()
+        .flatten()
+        .or_else(|| std::env::var("DEEPGRAM_API_KEY").ok())
+        .unwrap_or_default();
+    let openai_api_key = state
+        .db
+        .get_setting("openai_api_key")
+        .await
+        .ok()
+        .flatten()
+        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+        .unwrap_or_default();
     let output_dir = state
         .db
         .get_setting("output_dir")
@@ -379,9 +468,13 @@ async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String>
                 .to_string_lossy()
                 .to_string()
         });
-    let offline_mode = state.db.get_setting("offline_mode").await.ok().flatten().unwrap_or_default() == "true";
-    let offline_model = state.db.get_setting("offline_model").await.ok().flatten().unwrap_or_else(|| "base".to_string());
-    let custom_vocab = state.db.get_setting("custom_vocabulary").await.ok().flatten().unwrap_or_default();
+    let custom_vocab = state
+        .db
+        .get_setting("custom_vocabulary")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
     let transcription_backend = state
         .db
         .get_setting("transcription_backend")
@@ -396,9 +489,9 @@ async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String>
 
     Ok(AppSettings {
         groq_api_key,
+        deepgram_api_key,
+        openai_api_key,
         output_dir,
-        offline_mode,
-        offline_model,
         custom_vocabulary: custom_vocab,
         transcription_backend,
         ollama_url,
@@ -409,14 +502,46 @@ async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String>
 /// Save user settings to the local database.
 #[tauri::command]
 async fn save_settings(settings: AppSettings, state: State<'_, AppState>) -> Result<(), String> {
-    state.db.set_setting("groq_api_key", &settings.groq_api_key).await.map_err(|e| e.to_string())?;
-    state.db.set_setting("output_dir", &settings.output_dir).await.map_err(|e| e.to_string())?;
-    state.db.set_setting("offline_mode", if settings.offline_mode { "true" } else { "false" }).await.map_err(|e| e.to_string())?;
-    state.db.set_setting("offline_model", &settings.offline_model).await.map_err(|e| e.to_string())?;
-    state.db.set_setting("custom_vocabulary", &settings.custom_vocabulary).await.map_err(|e| e.to_string())?;
-    state.db.set_setting("transcription_backend", &settings.transcription_backend).await.map_err(|e| e.to_string())?;
-    state.db.set_setting("ollama_url", &settings.ollama_url).await.map_err(|e| e.to_string())?;
-    state.db.set_setting("ollama_model", &settings.ollama_model).await.map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting("groq_api_key", &settings.groq_api_key)
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting("deepgram_api_key", &settings.deepgram_api_key)
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting("openai_api_key", &settings.openai_api_key)
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting("output_dir", &settings.output_dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting("custom_vocabulary", &settings.custom_vocabulary)
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting("transcription_backend", &settings.transcription_backend)
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting("ollama_url", &settings.ollama_url)
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting("ollama_model", &settings.ollama_model)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -441,7 +566,8 @@ async fn pick_media_file() -> Result<Option<String>, String> {
                 .add_filter(
                     "Audio & Video Files",
                     &[
-                        "mp4", "mov", "webm", "mkv", "mp3", "wav", "m4a", "ogg", "opus", "aac", "flac",
+                        "mp4", "mov", "webm", "mkv", "mp3", "wav", "m4a", "ogg", "opus", "aac",
+                        "flac",
                     ],
                 )
                 .pick_file();
@@ -473,32 +599,6 @@ async fn download_ffmpeg(app: AppHandle, state: State<'_, AppState>) -> Result<S
             "download-progress",
             serde_json::json!({
                 "component": "ffmpeg",
-                "downloaded": downloaded,
-                "total": total,
-            }),
-        );
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(path.to_string_lossy().to_string())
-}
-
-/// Download the Whisper GGML model (base or tiny) to the app data directory.
-/// Emits download-progress events: { component: "whisper_<model>", downloaded: u64, total: u64 }
-#[tauri::command]
-async fn download_whisper_model(
-    model: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    let app_data_dir = state.app_data_dir.clone();
-    let app_clone = app.clone();
-    let model_label = model.clone();
-    let path = deps::download_whisper_model(&app_data_dir, &model, move |downloaded, total| {
-        let _ = app_clone.emit(
-            "download-progress",
-            serde_json::json!({
-                "component": format!("whisper_{model_label}"),
                 "downloaded": downloaded,
                 "total": total,
             }),
@@ -557,9 +657,11 @@ async fn get_hardware_info() -> HardwareInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub groq_api_key: String,
+    #[serde(default)]
+    pub deepgram_api_key: String,
+    #[serde(default)]
+    pub openai_api_key: String,
     pub output_dir: String,
-    pub offline_mode: bool,
-    pub offline_model: String,   // "tiny" | "base"
     pub custom_vocabulary: String,
     #[serde(default = "default_backend_name")]
     pub transcription_backend: String,
@@ -623,18 +725,14 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .expect("Could not resolve app data directory");
-            std::fs::create_dir_all(&app_data_dir)
-                .expect("Could not create app data directory");
+            std::fs::create_dir_all(&app_data_dir).expect("Could not create app data directory");
 
             // Set environment paths so dabar-core can find binaries in app data
             let bin_dir = app_data_dir.join("bin");
             if bin_dir.exists() {
                 let current_path = std::env::var("PATH").unwrap_or_default();
                 let sep = if cfg!(windows) { ";" } else { ":" };
-                std::env::set_var(
-                    "PATH",
-                    format!("{}{sep}{current_path}", bin_dir.display()),
-                );
+                std::env::set_var("PATH", format!("{}{sep}{current_path}", bin_dir.display()));
             }
 
             // Connect to SQLite (blocking here is fine — it's setup, not a command)
@@ -673,7 +771,6 @@ pub fn run() {
             pick_media_file,
             download_yt_dlp,
             download_ffmpeg,
-            download_whisper_model,
             get_offline_status,
             open_in_explorer,
             get_hardware_info,

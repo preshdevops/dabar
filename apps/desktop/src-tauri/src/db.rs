@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use dabar_core::{Chapter, Highlight, Sermon, SermonStatus, TranscriptSegment};
-use sqlx::{Row, SqlitePool};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use uuid::Uuid;
 
 /// Local SQLite database state for the desktop app.
@@ -29,7 +29,9 @@ impl Db {
                 }
             }
             // Clear stale migration checksum entry so future migrations are clean
-            let _ = sqlx::query("DROP TABLE IF EXISTS _sqlx_migrations").execute(&pool).await;
+            let _ = sqlx::query("DROP TABLE IF EXISTS _sqlx_migrations")
+                .execute(&pool)
+                .await;
         }
 
         // Apply non-breaking table and column additions for existing local sqlite databases
@@ -41,14 +43,30 @@ impl Db {
                 summary     TEXT NOT NULL DEFAULT '',
                 start_time  REAL NOT NULL,
                 end_time    REAL NOT NULL
-            )"
-        ).execute(&pool).await;
-        let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_chapters_sermon_id ON chapters(sermon_id, start_time)").execute(&pool).await;
-        let _ = sqlx::query("ALTER TABLE sermons ADD COLUMN audio_path TEXT").execute(&pool).await;
-        let _ = sqlx::query("ALTER TABLE sermons ADD COLUMN highlight_status TEXT").execute(&pool).await;
-        let _ = sqlx::query("ALTER TABLE sermons ADD COLUMN highlight_error TEXT").execute(&pool).await;
-        let _ = sqlx::query("ALTER TABLE sermons ADD COLUMN total_candidates INTEGER").execute(&pool).await;
-        let _ = sqlx::query("ALTER TABLE sermons ADD COLUMN passed_candidates INTEGER").execute(&pool).await;
+            )",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_chapters_sermon_id ON chapters(sermon_id, start_time)",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::query("ALTER TABLE sermons ADD COLUMN audio_path TEXT")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE sermons ADD COLUMN highlight_status TEXT")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE sermons ADD COLUMN highlight_error TEXT")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE sermons ADD COLUMN total_candidates INTEGER")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE sermons ADD COLUMN passed_candidates INTEGER")
+            .execute(&pool)
+            .await;
 
         tracing::info!("Database connected and migrations applied: {db_path}");
         Ok(Self { pool })
@@ -146,7 +164,9 @@ impl Db {
         .await
         .context("fetching highlight")?;
 
-        let Some(hl_row) = hl_row else { return Ok(None) };
+        let Some(hl_row) = hl_row else {
+            return Ok(None);
+        };
 
         let highlight = Highlight {
             id: Uuid::parse_str(hl_row.try_get::<String, _>("id")?.as_str())?,
@@ -319,21 +339,7 @@ impl Db {
         .await
         .context("updating highlight status in transaction")?;
 
-        for (ordinal, seg) in segments.iter().enumerate() {
-            sqlx::query(
-                "INSERT INTO transcript_segments (id, sermon_id, start_time, end_time, text, ordinal)
-                 VALUES (?, ?, ?, ?, ?, ?)",
-            )
-            .bind(Uuid::new_v4().to_string())
-            .bind(id.to_string())
-            .bind(seg.start as f64)
-            .bind(seg.end as f64)
-            .bind(&seg.text)
-            .bind(ordinal as i64)
-            .execute(&mut *tx)
-            .await
-            .context("inserting transcript segment")?;
-        }
+        insert_transcript_segments_batch(&mut tx, id, segments).await?;
 
         for hl in highlights {
             sqlx::query(
@@ -381,7 +387,9 @@ impl Db {
             .await
             .context("marking sermon as ready")?;
 
-        tx.commit().await.context("committing sermon result transaction")?;
+        tx.commit()
+            .await
+            .context("committing sermon result transaction")?;
         Ok(())
     }
 
@@ -462,7 +470,12 @@ impl Db {
 
     // ── Pipeline checkpoint operations ────────────────────────────────────────
 
-    pub async fn save_checkpoint(&self, sermon_id: Uuid, stage: &str, temp_path: &str) -> Result<()> {
+    pub async fn save_checkpoint(
+        &self,
+        sermon_id: Uuid,
+        stage: &str,
+        temp_path: &str,
+    ) -> Result<()> {
         sqlx::query(
             "INSERT INTO pipeline_checkpoints (sermon_id, last_stage, temp_path, updated_at)
              VALUES (?, ?, ?, ?)
@@ -491,12 +504,10 @@ impl Db {
     }
 
     pub async fn list_incomplete_pipelines(&self) -> Result<Vec<(Uuid, String, String)>> {
-        let rows = sqlx::query(
-            "SELECT sermon_id, last_stage, temp_path FROM pipeline_checkpoints",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .context("listing incomplete checkpoints")?;
+        let rows = sqlx::query("SELECT sermon_id, last_stage, temp_path FROM pipeline_checkpoints")
+            .fetch_all(&self.pool)
+            .await
+            .context("listing incomplete checkpoints")?;
 
         rows.into_iter()
             .map(|r| {
@@ -507,6 +518,39 @@ impl Db {
             })
             .collect()
     }
+}
+
+async fn insert_transcript_segments_batch(
+    tx: &mut Transaction<'_, Sqlite>,
+    sermon_id: Uuid,
+    segments: &[TranscriptSegment],
+) -> Result<()> {
+    const BATCH_SIZE: usize = 100;
+    let sermon_id = sermon_id.to_string();
+
+    for (batch_idx, batch) in segments.chunks(BATCH_SIZE).enumerate() {
+        let mut query_builder: QueryBuilder<Sqlite> = QueryBuilder::new(
+            "INSERT INTO transcript_segments (id, sermon_id, start_time, end_time, text, ordinal) ",
+        );
+
+        query_builder.push_values(batch.iter().enumerate(), |mut row, (offset, seg)| {
+            let ordinal = batch_idx * BATCH_SIZE + offset;
+            row.push_bind(Uuid::new_v4().to_string())
+                .push_bind(&sermon_id)
+                .push_bind(seg.start as f64)
+                .push_bind(seg.end as f64)
+                .push_bind(&seg.text)
+                .push_bind(ordinal as i64);
+        });
+
+        query_builder
+            .build()
+            .execute(&mut **tx)
+            .await
+            .context("batch inserting transcript segments")?;
+    }
+
+    Ok(())
 }
 
 pub fn row_to_sermon(row: sqlx::sqlite::SqliteRow) -> Result<Sermon> {
@@ -527,8 +571,16 @@ pub fn row_to_sermon(row: sqlx::sqlite::SqliteRow) -> Result<Sermon> {
         audio_path: row.try_get("audio_path").ok().flatten(),
         highlight_status: row.try_get("highlight_status").ok().flatten(),
         highlight_error: row.try_get("highlight_error").ok().flatten(),
-        total_candidates: row.try_get::<Option<i64>, _>("total_candidates").ok().flatten().map(|v| v as u32),
-        passed_candidates: row.try_get::<Option<i64>, _>("passed_candidates").ok().flatten().map(|v| v as u32),
+        total_candidates: row
+            .try_get::<Option<i64>, _>("total_candidates")
+            .ok()
+            .flatten()
+            .map(|v| v as u32),
+        passed_candidates: row
+            .try_get::<Option<i64>, _>("passed_candidates")
+            .ok()
+            .flatten()
+            .map(|v| v as u32),
     })
 }
 

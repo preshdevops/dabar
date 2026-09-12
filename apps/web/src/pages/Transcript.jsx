@@ -206,10 +206,7 @@ export default function Transcript() {
     setClipExportSuccess(null);
     setClipRange((prev) => {
       const newStart = Math.max(0, time);
-      let newEnd = prev.end;
-      if (newEnd !== null && newEnd <= newStart) {
-        newEnd = newStart + 30;
-      }
+      const newEnd = prev.end !== null && prev.end <= newStart ? null : prev.end;
       return { start: newStart, end: newEnd };
     });
   }
@@ -220,9 +217,10 @@ export default function Transcript() {
     setClipExportSuccess(null);
     setClipRange((prev) => {
       const newEnd = Math.max(0, time);
-      let newStart = prev.start !== null ? prev.start : 0;
-      if (newStart >= newEnd) {
-        newStart = Math.max(0, newEnd - 30);
+      const newStart = prev.start !== null ? prev.start : 0;
+      if (newEnd <= newStart) {
+        setClipRenderError("Clip end timestamp must be greater than start timestamp.");
+        return prev;
       }
       return { start: newStart, end: newEnd };
     });

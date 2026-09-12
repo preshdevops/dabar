@@ -122,9 +122,17 @@ export async function cancelPipeline(sermonId) {
 }
 
 /**
- * Render a vertical clip to disk and return the output file path.
+ * Render a clip to disk and return the output file path.
  */
-export async function renderClip(sermonId, clipId, startTime, endTime, clipTitle) {
+export async function renderClip(
+  sermonId,
+  clipId,
+  startTime,
+  endTime,
+  clipTitle,
+  aspectRatio = "9:16",
+  captionStyle = "amber"
+) {
   const core = await getTauriCore();
   if (core) {
     return await core.invoke("render_clip", {
@@ -134,6 +142,8 @@ export async function renderClip(sermonId, clipId, startTime, endTime, clipTitle
       startTime: typeof startTime === "number" ? Number(startTime) : null,
       endTime: typeof endTime === "number" ? Number(endTime) : null,
       clipTitle: clipTitle || null,
+      aspectRatio: aspectRatio || "9:16",
+      captionStyle: captionStyle || "amber",
     });
   }
   return "C:\\Users\\User\\Videos\\Dabar\\dabar_clip.mp4";
@@ -142,7 +152,14 @@ export async function renderClip(sermonId, clipId, startTime, endTime, clipTitle
 /**
  * Render an arbitrary time range clip to disk and return the output file path.
  */
-export async function renderClipRange(sermonId, startTime, endTime, clipTitle) {
+export async function renderClipRange(
+  sermonId,
+  startTime,
+  endTime,
+  clipTitle,
+  aspectRatio = "9:16",
+  captionStyle = "amber"
+) {
   const core = await getTauriCore();
   if (core) {
     return await core.invoke("render_clip_range", {
@@ -150,6 +167,8 @@ export async function renderClipRange(sermonId, startTime, endTime, clipTitle) {
       startTime: Number(startTime),
       endTime: Number(endTime),
       clipTitle: clipTitle || null,
+      aspectRatio: aspectRatio || "9:16",
+      captionStyle: captionStyle || "amber",
     });
   }
   return "C:\\Users\\Mock\\Videos\\Dabar\\mock_range_clip.mp4";
@@ -346,21 +365,8 @@ export async function downloadFfmpeg() {
 }
 
 /**
- * Download a Whisper GGML model to the app data directory.
- * @param {"base"|"tiny"} model - which model to download
- * Progress reported via onDownloadProgress events.
- */
-export async function downloadWhisperModel(model = "base") {
-  const core = await getTauriCore();
-  if (core) {
-    return await core.invoke("download_whisper_model", { model });
-  }
-  throw new Error("Tauri runtime not available");
-}
-
-/**
- * Get offline readiness status — which components are already downloaded.
- * Returns { ffmpeg_ready, yt_dlp_ready, whisper_base_ready, whisper_tiny_ready }
+ * Get offline tool readiness status — which components are already downloaded.
+ * Returns { ffmpeg_ready, yt_dlp_ready }
  */
 export async function getOfflineStatus() {
   const core = await getTauriCore();
@@ -371,7 +377,5 @@ export async function getOfflineStatus() {
   return {
     ffmpeg_ready: false,
     yt_dlp_ready: false,
-    whisper_base_ready: false,
-    whisper_tiny_ready: false,
   };
 }

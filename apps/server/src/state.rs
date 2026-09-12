@@ -262,7 +262,9 @@ impl AppState {
             .await
             .context("marking sermon as ready")?;
 
-        tx.commit().await.context("committing sermon result transaction")?;
+        tx.commit()
+            .await
+            .context("committing sermon result transaction")?;
         Ok(())
     }
 }
@@ -279,7 +281,8 @@ fn database_url() -> String {
         };
 
         // If invoked from apps/server, anchor relative path to workspace root
-        if (formatted.starts_with("sqlite://dabar.sqlite3") || formatted.starts_with("sqlite:dabar.sqlite3"))
+        if (formatted.starts_with("sqlite://dabar.sqlite3")
+            || formatted.starts_with("sqlite:dabar.sqlite3"))
             && std::path::Path::new("../../Cargo.toml").exists()
         {
             formatted = formatted.replace("dabar.sqlite3", "../../dabar.sqlite3");
@@ -340,5 +343,3 @@ fn status_from_str(status: &str) -> SermonStatus {
         _ => SermonStatus::Queued,
     }
 }
-
-

@@ -1,4 +1,4 @@
-use crate::models::{Paragraph, Section, ScriptureRef, StructuredTranscript, TranscriptSegment};
+use crate::models::{Paragraph, ScriptureRef, Section, StructuredTranscript, TranscriptSegment};
 
 const SECTION_MARKERS: &[&str] = &[
     "let us pray",
@@ -26,20 +26,73 @@ const SECTION_MARKERS: &[&str] = &[
 ];
 
 pub const BIBLE_BOOKS: &[&str] = &[
-    "Genesis", "Exodus", "Leviticus", "Numbers", "Deuteronomy",
-    "Joshua", "Judges", "Ruth", "1 Samuel", "2 Samuel",
-    "1 Kings", "2 Kings", "1 Chronicles", "2 Chronicles",
-    "Ezra", "Nehemiah", "Esther", "Job", "Psalms", "Psalm",
-    "Proverbs", "Ecclesiastes", "Song of Solomon", "Isaiah",
-    "Jeremiah", "Lamentations", "Ezekiel", "Daniel", "Hosea",
-    "Joel", "Amos", "Obadiah", "Jonah", "Micah", "Nahum",
-    "Habakkuk", "Zephaniah", "Haggai", "Zechariah", "Malachi",
-    "Matthew", "Mark", "Luke", "John", "Acts", "Romans",
-    "1 Corinthians", "2 Corinthians", "Galatians", "Ephesians",
-    "Philippians", "Colossians", "1 Thessalonians", "2 Thessalonians",
-    "1 Timothy", "2 Timothy", "Titus", "Philemon", "Hebrews",
-    "James", "1 Peter", "2 Peter", "1 John", "2 John", "3 John",
-    "Jude", "Revelation",
+    "Genesis",
+    "Exodus",
+    "Leviticus",
+    "Numbers",
+    "Deuteronomy",
+    "Joshua",
+    "Judges",
+    "Ruth",
+    "1 Samuel",
+    "2 Samuel",
+    "1 Kings",
+    "2 Kings",
+    "1 Chronicles",
+    "2 Chronicles",
+    "Ezra",
+    "Nehemiah",
+    "Esther",
+    "Job",
+    "Psalms",
+    "Psalm",
+    "Proverbs",
+    "Ecclesiastes",
+    "Song of Solomon",
+    "Isaiah",
+    "Jeremiah",
+    "Lamentations",
+    "Ezekiel",
+    "Daniel",
+    "Hosea",
+    "Joel",
+    "Amos",
+    "Obadiah",
+    "Jonah",
+    "Micah",
+    "Nahum",
+    "Habakkuk",
+    "Zephaniah",
+    "Haggai",
+    "Zechariah",
+    "Malachi",
+    "Matthew",
+    "Mark",
+    "Luke",
+    "John",
+    "Acts",
+    "Romans",
+    "1 Corinthians",
+    "2 Corinthians",
+    "Galatians",
+    "Ephesians",
+    "Philippians",
+    "Colossians",
+    "1 Thessalonians",
+    "2 Thessalonians",
+    "1 Timothy",
+    "2 Timothy",
+    "Titus",
+    "Philemon",
+    "Hebrews",
+    "James",
+    "1 Peter",
+    "2 Peter",
+    "1 John",
+    "2 John",
+    "3 John",
+    "Jude",
+    "Revelation",
 ];
 
 /// Detects scripture references like "John 3:16", "Romans 8:28", "Psalm 23:1-4" in text.
@@ -100,7 +153,9 @@ fn parse_chapter_verse(s: &str) -> Option<String> {
         }
     }
 
-    let trimmed_result = result.trim_matches(|c: char| !c.is_ascii_digit()).to_string();
+    let trimmed_result = result
+        .trim_matches(|c: char| !c.is_ascii_digit())
+        .to_string();
     if trimmed_result.contains(':') && saw_digit {
         Some(trimmed_result)
     } else if saw_digit && trimmed_result.len() <= 3 {
@@ -129,10 +184,7 @@ pub fn detect_section_title(text: &str) -> Option<String> {
 }
 
 /// Applies user custom vocabulary replacements to raw transcript segments.
-pub fn apply_custom_vocabulary(
-    segments: &mut [TranscriptSegment],
-    custom_vocab_csv: &str,
-) {
+pub fn apply_custom_vocabulary(segments: &mut [TranscriptSegment], custom_vocab_csv: &str) {
     if custom_vocab_csv.trim().is_empty() {
         return;
     }
@@ -208,8 +260,12 @@ pub fn structure_transcript(
         if let Some(new_title) = detect_section_title(&seg.text) {
             // First seal any in-progress paragraph
             if !current_para_text.is_empty() {
-                let para_end = current_para_segments.last().map(|s| s.end).unwrap_or(seg.start);
-                let para_scriptures = detect_scripture_references(&current_para_text, current_para_start);
+                let para_end = current_para_segments
+                    .last()
+                    .map(|s| s.end)
+                    .unwrap_or(seg.start);
+                let para_scriptures =
+                    detect_scripture_references(&current_para_text, current_para_start);
                 current_paragraphs.push(Paragraph {
                     start_time: current_para_start,
                     end_time: para_end,
@@ -222,7 +278,10 @@ pub fn structure_transcript(
 
             // Seal previous section if it has paragraphs
             if !current_paragraphs.is_empty() {
-                let section_end = current_paragraphs.last().map(|p| p.end_time).unwrap_or(seg.start);
+                let section_end = current_paragraphs
+                    .last()
+                    .map(|p| p.end_time)
+                    .unwrap_or(seg.start);
                 sections.push(Section {
                     title: current_section_title,
                     start_time: current_section_start,
@@ -257,7 +316,8 @@ pub fn structure_transcript(
 
         if should_break_paragraph {
             let end_time = seg.end;
-            let para_scriptures = detect_scripture_references(&current_para_text, current_para_start);
+            let para_scriptures =
+                detect_scripture_references(&current_para_text, current_para_start);
 
             current_paragraphs.push(Paragraph {
                 start_time: current_para_start,
@@ -307,10 +367,22 @@ mod tests {
     #[test]
     fn test_structure_transcript_groups_paragraphs() {
         let segs = vec![
-            TranscriptSegment { start: 0.0, end: 3.0, text: "Good morning church.".to_string() },
-            TranscriptSegment { start: 3.2, end: 6.0, text: "It is wonderful to be here today.".to_string() },
+            TranscriptSegment {
+                start: 0.0,
+                end: 3.0,
+                text: "Good morning church.".to_string(),
+            },
+            TranscriptSegment {
+                start: 3.2,
+                end: 6.0,
+                text: "It is wonderful to be here today.".to_string(),
+            },
             // Gap > 1.2s -> paragraph break
-            TranscriptSegment { start: 8.0, end: 12.0, text: "Turn with me to Romans 8:28.".to_string() },
+            TranscriptSegment {
+                start: 8.0,
+                end: 12.0,
+                text: "Turn with me to Romans 8:28.".to_string(),
+            },
         ];
 
         let structured = structure_transcript(&segs, "");

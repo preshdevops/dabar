@@ -1,6 +1,11 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-use tokio::process::Command;
+
+use crate::models::TranscriptSegment;
+
+#[path = "deps.rs"]
+pub mod deps;
+pub use deps::{find_binary, get_binary_command, refresh_process_path};
 
 pub async fn has_video_stream(input_source: &str) -> bool {
     let output = get_binary_command("ffprobe")
@@ -25,11 +30,231 @@ pub async fn has_video_stream(input_source: &str) -> bool {
     }
 }
 
+/// Format seconds into ASS timestamp format: H:MM:SS.cc
+pub fn format_ass_time(seconds: f32) -> String {
+    let non_neg = seconds.max(0.0);
+    let total_cs = (non_neg * 100.0).round() as u64;
+    let cs = total_cs % 100;
+    let total_s = total_cs / 100;
+    let s = total_s % 60;
+    let total_m = total_s / 60;
+    let m = total_m % 60;
+    let h = total_m / 60;
+    format!("{h}:{m:02}:{s:02}.{cs:02}")
+}
+
+/// Escape a path for inclusion in an FFmpeg filter option (e.g. subtitles='C\\:/path/to/file.ass')
+pub fn escape_ffmpeg_filter_path(path: &Path) -> String {
+    let path_str = path.to_string_lossy().replace('\\', "/");
+    let escaped = path_str.replace(':', "\\:").replace('\'', "'\\''");
+    format!("'{escaped}'")
+}
+
+/// Generate timed ASS subtitle content from transcript segments overlapping the clip range.
+/// Supports style presets: "amber" (Warm Amber with gold glow), "kinetic" (bold uppercase with black box),
+/// and "editorial" (sacred serif).
+pub fn generate_ass_subtitles(
+    segments: &[TranscriptSegment],
+    clip_start: f32,
+    clip_end: f32,
+    timeline_offset: f32,
+    target_w: u32,
+    target_h: u32,
+    style_name: &str,
+) -> Option<String> {
+    let clip_duration = clip_end - clip_start;
+    let timeline_end = timeline_offset + clip_duration;
+
+    let overlapping: Vec<&TranscriptSegment> = segments
+        .iter()
+        .filter(|s| s.end > timeline_offset && s.start < timeline_end)
+        .collect();
+
+    if overlapping.is_empty() {
+        return None;
+    }
+
+    let margin_lr = ((target_w as f32 * 0.08) as u32).max(20);
+
+    // Style presets
+    // Colors in ASS format: &HAABBGGRR (alpha, blue, green, red)
+    let (
+        font_name,
+        font_size,
+        primary_color,
+        outline_color,
+        back_color,
+        bold,
+        italic,
+        border_style,
+        outline_w,
+        shadow_w,
+        margin_v,
+        is_uppercase,
+    ) = match style_name.to_lowercase().as_str() {
+        "kinetic" => {
+            // Bold uppercase with black backing box
+            let fsize = if target_h > 1500 { 58 } else { 44 };
+            let mv = if target_h > 1500 { 280 } else { 120 };
+            (
+                "Arial",
+                fsize,
+                "&H00FFFFFF",
+                "&H00000000",
+                "&HB0000000",
+                1,
+                0,
+                3,
+                6.0,
+                0.0,
+                mv,
+                true,
+            )
+        }
+        "editorial" => {
+            // Sacred serif, italic, soft cream
+            let fsize = if target_h > 1500 { 50 } else { 40 };
+            let mv = if target_h > 1500 { 260 } else { 110 };
+            (
+                "Georgia",
+                fsize,
+                "&H00E8F4FD",
+                "&H00141010",
+                "&H80000000",
+                0,
+                1,
+                1,
+                1.8,
+                1.5,
+                mv,
+                false,
+            )
+        }
+        // "amber" / "cobalt" or default: Warm Amber with gold glow
+        _ => {
+            let fsize = if target_h > 1500 { 54 } else { 42 };
+            let mv = if target_h > 1500 { 260 } else { 110 };
+            // Primary: crisp white (&H00FFFFFF), Outline: Warm Amber #D4913A -> BGR &H003A91D4
+            (
+                "Segoe UI",
+                fsize,
+                "&H00FFFFFF",
+                "&H003A91D4",
+                "&H80000000",
+                1,
+                0,
+                1,
+                3.2,
+                2.0,
+                mv,
+                false,
+            )
+        }
+    };
+
+    let mut ass = String::new();
+    ass.push_str("[Script Info]\n");
+    ass.push_str("ScriptType: v4.00+\n");
+    ass.push_str(&format!("PlayResX: {target_w}\n"));
+    ass.push_str(&format!("PlayResY: {target_h}\n"));
+    ass.push_str("WrapStyle: 0\n");
+    ass.push_str("ScaledBorderAndShadow: yes\n\n");
+
+    ass.push_str("[V4+ Styles]\n");
+    ass.push_str("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n");
+    ass.push_str(&format!(
+        "Style: Default,{font_name},{font_size},{primary_color},&H000000FF,{outline_color},{back_color},{bold},{italic},0,0,100,100,0,0,{border_style},{outline_w:.1},{shadow_w:.1},2,{margin_lr},{margin_lr},{margin_v},1\n\n"
+    ));
+
+    ass.push_str("[Events]\n");
+    ass.push_str(
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
+    );
+
+    for seg in overlapping {
+        let seg_rel_start = (seg.start - timeline_offset).max(0.0) + clip_start;
+        let seg_rel_end = (seg.end - timeline_offset).min(clip_duration) + clip_start;
+        if seg_rel_end <= seg_rel_start || (seg_rel_end - seg_rel_start) < 0.05 {
+            continue;
+        }
+
+        let start_str = format_ass_time(seg_rel_start);
+        let end_str = format_ass_time(seg_rel_end);
+
+        let clean_text = seg
+            .text
+            .trim()
+            .replace('{', "(")
+            .replace('}', ")")
+            .replace("\r\n", "\\N")
+            .replace('\n', "\\N");
+        if clean_text.is_empty() {
+            continue;
+        }
+
+        let final_text = if is_uppercase {
+            clean_text.to_uppercase()
+        } else {
+            clean_text
+        };
+
+        ass.push_str(&format!(
+            "Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{final_text}\n"
+        ));
+    }
+
+    Some(ass)
+}
+
 pub async fn extract_vertical_clip(
     input_source: &str,
     output_path: &Path,
     start_time: f32,
     end_time: f32,
+) -> Result<()> {
+    extract_clip(
+        input_source,
+        output_path,
+        start_time,
+        end_time,
+        "9:16",
+        None,
+        None,
+    )
+    .await
+}
+
+pub async fn extract_clip(
+    input_source: &str,
+    output_path: &Path,
+    start_time: f32,
+    end_time: f32,
+    aspect_ratio: &str,
+    caption_segments: Option<&[TranscriptSegment]>,
+    caption_style: Option<&str>,
+) -> Result<()> {
+    extract_clip_with_timeline_offset(
+        input_source,
+        output_path,
+        start_time,
+        end_time,
+        start_time,
+        aspect_ratio,
+        caption_segments,
+        caption_style,
+    )
+    .await
+}
+
+pub async fn extract_clip_with_timeline_offset(
+    input_source: &str,
+    output_path: &Path,
+    start_time: f32,
+    end_time: f32,
+    timeline_offset: f32,
+    aspect_ratio: &str,
+    caption_segments: Option<&[TranscriptSegment]>,
+    caption_style: Option<&str>,
 ) -> Result<()> {
     if start_time < 0.0 || end_time <= start_time {
         anyhow::bail!(
@@ -39,6 +264,38 @@ pub async fn extract_vertical_clip(
 
     let duration = end_time - start_time;
     let has_video = has_video_stream(input_source).await;
+
+    let (target_w, target_h) = match aspect_ratio {
+        "1:1" => (1080u32, 1080u32),
+        "16:9" => (1920u32, 1080u32),
+        _ => (1080u32, 1920u32), // Default 9:16 vertical
+    };
+
+    // Prepare ASS subtitle file if requested
+    let mut temp_ass_path: Option<PathBuf> = None;
+    let mut subtitle_filter = String::new();
+
+    if let Some(style) = caption_style.filter(|s| !s.trim().is_empty() && *s != "none") {
+        if let Some(segments) = caption_segments {
+            if let Some(ass_content) = generate_ass_subtitles(
+                segments,
+                start_time,
+                end_time,
+                timeline_offset,
+                target_w,
+                target_h,
+                style,
+            ) {
+                let ass_file =
+                    output_path.with_extension(format!("tmp_{}.ass", std::process::id()));
+                if let Ok(_) = tokio::fs::write(&ass_file, ass_content.as_bytes()).await {
+                    let escaped = escape_ffmpeg_filter_path(&ass_file);
+                    subtitle_filter = format!(",subtitles={escaped}");
+                    temp_ass_path = Some(ass_file);
+                }
+            }
+        }
+    }
 
     let mut cmd = get_binary_command("ffmpeg");
     cmd.arg("-y")
@@ -54,12 +311,23 @@ pub async fn extract_vertical_clip(
         .arg("make_zero");
 
     if has_video {
-        // High-definition 9:16 vertical video with 50x faster downscale-blur-upscale technique:
-        // Background: downscaled to 108x192, softly blurred, then upscaled to 1080x1920 with bilinear filter
-        // Foreground: cleanly scaled to fit within 1080x1920 keeping crisp original aspect ratio
-        // Output: libx264 veryfast with yuv420p for universal mobile and desktop playback
+        let filter_str = if aspect_ratio == "16:9" {
+            format!(
+                "[0:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:color=black{subtitle_filter}[v]"
+            )
+        } else {
+            let bg_w = target_w / 2;
+            let bg_h = target_h / 2;
+            format!(
+                "[0:v]split[fg_in][bg_in];\
+                 [bg_in]scale={bg_w}:{bg_h}:force_original_aspect_ratio=increase:force_divisible_by=2,crop={bg_w}:{bg_h}:(in_w-out_w)/2:(in_h-out_h)/2,boxblur=15:2,scale={target_w}:{target_h}:flags=bilinear[bg];\
+                 [fg_in]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease:force_divisible_by=2[fg];\
+                 [bg][fg]overlay=(W-w)/2:(H-h)/2{subtitle_filter}[v]"
+            )
+        };
+
         cmd.arg("-filter_complex")
-            .arg("[0:v]split[fg_in][bg_in];[bg_in]scale=108:192:force_original_aspect_ratio=increase,crop=108:192,boxblur=5:2,scale=1080:1920:flags=bilinear[bg];[fg_in]scale=1080:1920:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[v]")
+            .arg(&filter_str)
             .arg("-map")
             .arg("[v]")
             .arg("-map")
@@ -77,16 +345,21 @@ pub async fn extract_vertical_clip(
             .arg("-b:a")
             .arg("192k");
     } else {
-        // Audio-only source: render clean 1080x1920 vertical video card with waveform visualizer
+        // Audio-only source: render clean video card with waveform visualizer and proper asplit
+        let wave_w = (((target_w as f32 * 0.88) as u32) / 2) * 2;
+        let wave_h = (((target_h as f32 * 0.22) as u32) / 2) * 2;
         let filter_str = format!(
-            "color=c=0x080c14:s=1080x1920:d={duration:.3}:r=30[bg];[0:a]showwaves=s=960x380:mode=cline:colors=0xe5a93c:r=30[wave];[bg][wave]overlay=(W-w)/2:(H-h)/2:shortest=1[v]"
+            "color=c=0x080c14:s={target_w}x{target_h}:d={duration:.3}:r=30[bg];\
+             [0:a]asplit[a_wave][a_out];\
+             [a_wave]showwaves=s={wave_w}x{wave_h}:mode=cline:colors=0xd4913a:r=30[wave];\
+             [bg][wave]overlay=(W-w)/2:(H-h)/2:shortest=1{subtitle_filter}[v]"
         );
         cmd.arg("-filter_complex")
             .arg(&filter_str)
             .arg("-map")
             .arg("[v]")
             .arg("-map")
-            .arg("0:a")
+            .arg("[a_out]")
             .arg("-c:v")
             .arg("libx264")
             .arg("-pix_fmt")
@@ -106,7 +379,14 @@ pub async fn extract_vertical_clip(
         .arg(output_path)
         .output()
         .await
-        .context("executing ffmpeg process")?;
+        .context("executing ffmpeg process");
+
+    // Clean up temporary ASS subtitle file if one was written
+    if let Some(ass_file) = temp_ass_path {
+        let _ = tokio::fs::remove_file(ass_file).await;
+    }
+
+    let output = output?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -158,10 +438,7 @@ pub async fn extract_audio_clip(
     Ok(())
 }
 
-pub async fn preprocess_audio_for_whisper(
-    input_path: &Path,
-    output_path: &Path,
-) -> Result<()> {
+pub async fn preprocess_audio_for_whisper(input_path: &Path, output_path: &Path) -> Result<()> {
     let output = get_binary_command("ffmpeg")
         .arg("-y")
         .arg("-threads")
@@ -176,7 +453,7 @@ pub async fn preprocess_audio_for_whisper(
         .arg("-c:a")
         .arg("libmp3lame")
         .arg("-b:a")
-        .arg("64k")
+        .arg("48k")
         .arg("-compression_level")
         .arg("2")
         .arg(output_path)
@@ -193,10 +470,7 @@ pub async fn preprocess_audio_for_whisper(
 }
 
 /// Converts any media file to a 16kHz 16-bit mono PCM WAV file required by local whisper.cpp.
-pub async fn convert_audio_to_wav_16k(
-    input_path: &Path,
-    output_path: &Path,
-) -> Result<()> {
+pub async fn convert_audio_to_wav_16k(input_path: &Path, output_path: &Path) -> Result<()> {
     let output = get_binary_command("ffmpeg")
         .arg("-y")
         .arg("-threads")
@@ -247,7 +521,7 @@ pub async fn extract_audio_chunk(
         .arg("-c:a")
         .arg("libmp3lame")
         .arg("-b:a")
-        .arg("64k")
+        .arg("48k")
         .arg("-compression_level")
         .arg("2")
         .arg(output_path)
@@ -294,12 +568,14 @@ pub async fn extract_audio_chunk_wav(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("ffmpeg audio chunk WAV extraction failed: {}", stderr.trim());
+        anyhow::bail!(
+            "ffmpeg audio chunk WAV extraction failed: {}",
+            stderr.trim()
+        );
     }
 
     Ok(())
 }
-
 
 pub async fn get_media_duration(input_path: &Path) -> Result<f32> {
     let output = get_binary_command("ffmpeg")
@@ -361,114 +637,103 @@ pub async fn check_ffmpeg_installed() -> Result<String> {
     Ok(version_line)
 }
 
-fn get_binary_command(name: &str) -> Command {
-    let env_key = format!("{}_PATH", name.to_uppercase().replace('-', "_"));
-    if let Ok(custom_path) = std::env::var(&env_key) {
-        if !custom_path.trim().is_empty() {
-            let p = PathBuf::from(custom_path.trim());
-            if p.exists() {
-                return Command::new(p);
-            }
-        }
-    }
-
-    let exe_name = if cfg!(windows) && !name.ends_with(".exe") {
-        format!("{name}.exe")
-    } else {
-        name.to_string()
-    };
-
-    // 1. Platform-specific app-data bin directories
-    #[cfg(windows)]
-    {
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            let candidate = PathBuf::from(&appdata).join("dabar").join("bin").join(&exe_name);
-            if candidate.exists() {
-                return Command::new(candidate);
-            }
-        }
-        if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
-            let candidate = PathBuf::from(&localappdata).join("dabar").join("bin").join(&exe_name);
-            if candidate.exists() {
-                return Command::new(candidate);
-            }
-        }
-        let candidate2 = PathBuf::from(&appdata).join("com.preshdevops.dabar").join("bin").join(&exe_name);
-        if candidate2.exists() {
-            return Command::new(candidate2);
-        }
-    }
-    // XDG-compliant path for Linux/macOS: ~/.local/share/dabar/bin/<exe>
-    #[cfg(not(windows))]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            let xdg_data = std::env::var("XDG_DATA_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from(&home).join(".local").join("share"));
-            let candidate = xdg_data.join("dabar").join("bin").join(&exe_name);
-            if candidate.exists() {
-                return Command::new(candidate);
-            }
-            // Legacy ~/.dabar/bin fallback
-            let legacy = PathBuf::from(&home).join(".dabar").join("bin").join(&exe_name);
-            if legacy.exists() {
-                return Command::new(legacy);
-            }
-            // ~/.local/bin fallback (user-installed system binaries)
-            let local_bin = PathBuf::from(&home).join(".local").join("bin").join(&exe_name);
-            if local_bin.exists() {
-                return Command::new(local_bin);
-            }
-        }
-    }
-
-    // Shared HOME/.dabar/bin for any remaining platforms
-    if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
-        let home_p = PathBuf::from(&home);
-        let cand1 = home_p.join(".dabar").join("bin").join(&exe_name);
-        if cand1.exists() {
-            return Command::new(cand1);
-        }
-        let cand2 = home_p.join(".local").join("bin").join(&exe_name);
-        if cand2.exists() {
-            return Command::new(cand2);
-        }
-    }
-
-    // 2. Walk up ancestor directories (cwd, cwd/.., cwd/../.., ...) to find bin/<exe>
-    if let Ok(cwd) = std::env::current_dir() {
-        let mut dir: Option<&Path> = Some(cwd.as_path());
-        while let Some(ancestor) = dir {
-            let bin_dir = ancestor.join("bin");
-            let candidate = bin_dir.join(&exe_name);
-            if candidate.exists() {
-                return Command::new(candidate);
-            }
-            if let Ok(mut entries) = std::fs::read_dir(&bin_dir) {
-                while let Some(Ok(entry)) = entries.next() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        let sub1 = path.join(&exe_name);
-                        if sub1.exists() {
-                            return Command::new(sub1);
-                        }
-                        let sub2 = path.join("bin").join(&exe_name);
-                        if sub2.exists() {
-                            return Command::new(sub2);
-                        }
-                    }
-                }
-            }
-            dir = ancestor.parent();
-        }
-    }
-
-    Command::new(name)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_format_ass_time() {
+        assert_eq!(format_ass_time(0.0), "0:00:00.00");
+        assert_eq!(format_ass_time(1.234), "0:00:01.23");
+        assert_eq!(format_ass_time(65.5), "0:01:05.50");
+        assert_eq!(format_ass_time(3661.05), "1:01:01.05");
+    }
+
+    #[test]
+    fn test_escape_ffmpeg_filter_path() {
+        let p1 = Path::new("C:\\Users\\Dabar\\output.ass");
+        let escaped = escape_ffmpeg_filter_path(p1);
+        assert!(escaped.starts_with('\'') && escaped.ends_with('\''));
+        assert!(escaped.contains("C\\:/Users/Dabar/output.ass"));
+    }
+
+    #[test]
+    fn test_generate_ass_subtitles_amber() {
+        let segs = vec![
+            TranscriptSegment {
+                start: 10.0,
+                end: 15.0,
+                text: "The grace of God appeared to all.".to_string(),
+            },
+            TranscriptSegment {
+                start: 16.0,
+                end: 20.0,
+                text: "Bringing salvation for everyone.".to_string(),
+            },
+        ];
+
+        let ass = generate_ass_subtitles(&segs, 10.0, 20.0, 10.0, 1080, 1920, "amber")
+            .expect("should generate ASS subtitles");
+
+        assert!(ass.contains("[Script Info]"));
+        assert!(ass.contains("PlayResX: 1080"));
+        assert!(ass.contains("PlayResY: 1920"));
+        assert!(
+            ass.contains("Style: Default,Segoe UI,54,&H00FFFFFF,&H000000FF,&H003A91D4,&H80000000")
+        );
+        assert!(ass.contains(
+            "Dialogue: 0,0:00:10.00,0:00:15.00,Default,,0,0,0,,The grace of God appeared to all."
+        ));
+        assert!(ass.contains(
+            "Dialogue: 0,0:00:16.00,0:00:20.00,Default,,0,0,0,,Bringing salvation for everyone."
+        ));
+    }
+
+    #[test]
+    fn test_generate_ass_subtitles_kinetic() {
+        let segs = vec![TranscriptSegment {
+            start: 0.0,
+            end: 5.0,
+            text: "Faith moves mountains!".to_string(),
+        }];
+
+        let ass = generate_ass_subtitles(&segs, 0.0, 5.0, 0.0, 1920, 1080, "kinetic")
+            .expect("should generate kinetic ASS");
+
+        assert!(ass.contains("BorderStyle, Outline, Shadow"));
+        // Kinetic must uppercase text and use borderstyle 3
+        assert!(ass.contains("FAITH MOVES MOUNTAINS!"));
+        assert!(ass.contains(",3,6.0,0.0,2,"));
+    }
+
+    #[test]
+    fn test_generate_ass_subtitles_editorial() {
+        let segs = vec![TranscriptSegment {
+            start: 5.0,
+            end: 12.0,
+            text: "In the beginning was the Word.".to_string(),
+        }];
+
+        let ass = generate_ass_subtitles(&segs, 5.0, 12.0, 5.0, 1080, 1080, "editorial")
+            .expect("should generate editorial ASS");
+
+        assert!(ass.contains("Georgia"));
+        assert!(ass.contains("&H00E8F4FD"));
+        assert!(ass.contains("In the beginning was the Word."));
+    }
+
+    #[test]
+    fn test_generate_ass_subtitles_out_of_bounds() {
+        let segs = vec![TranscriptSegment {
+            start: 100.0,
+            end: 105.0,
+            text: "Far away in the sermon.".to_string(),
+        }];
+
+        // Clip is 10.0 to 20.0, segment is at 100.0
+        let ass = generate_ass_subtitles(&segs, 10.0, 20.0, 10.0, 1080, 1920, "amber");
+        assert!(ass.is_none());
+    }
 
     #[test]
     fn test_parse_ffmpeg_duration_standard() {

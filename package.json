@@ -1,7 +1,11 @@
 {
   "name": "dabar-monorepo",
   "private": true,
+  "type": "module",
   "scripts": {
-    "build": "cd apps/web && npm install && npm run build"
+    "desktop": "cd apps/desktop && npx --prefix ../web tauri dev",
+    "web": "cd apps/web && npm run dev",
+    "build": "cd apps/web && npm install && npm run build",
+    "test": "node tests/e2e/runner.js"
   }
 }

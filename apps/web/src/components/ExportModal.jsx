@@ -25,22 +25,22 @@ const ASPECT_RATIOS = [
 
 const CAPTION_STYLES = [
   {
-    key: "cobalt",
-    label: "Cobalt Sapphire",
-    preview: "Luminous sapphire highlight with crisp contrast",
-    cssClass: "font-sans text-blue-400 font-bold drop-shadow-[0_0_10px_rgba(59,130,246,0.5)]",
+    key: "amber",
+    label: "Warm Amber",
+    preview: "Warm amber emphasis with crisp contrast",
+    cssClass: "font-serif text-[#D4913A] font-bold drop-shadow-[0_0_10px_rgba(212,145,58,0.55)]",
   },
   {
     key: "kinetic",
     label: "Kinetic White",
     preview: "Crisp white subtitle with high-visibility backing",
-    cssClass: "font-sans uppercase font-extrabold text-white tracking-wider",
+    cssClass: "font-serif uppercase font-extrabold text-white",
   },
   {
     key: "editorial",
     label: "Sacred Editorial",
-    preview: "High-contrast editorial serif with soft blue tint",
-    cssClass: "font-editorial italic font-semibold text-blue-200",
+    preview: "High-contrast Fraunces serif with soft amber tint",
+    cssClass: "font-editorial italic font-semibold text-[#F6D9B0]",
   },
 ];
 
