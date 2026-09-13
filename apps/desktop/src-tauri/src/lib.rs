@@ -197,7 +197,7 @@ async fn start_pipeline(
             app_data_dir_clone,
             ollama_url,
             ollama_model,
-            offline_mode,
+            false, // offline_mode removed; parameter kept for API compat
         )
         .await;
 
