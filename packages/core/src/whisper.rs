@@ -42,6 +42,12 @@ struct GroqSegment {
     start: f32,
     end: f32,
     text: String,
+    #[serde(default)]
+    no_speech_prob: Option<f32>,
+    #[serde(default)]
+    compression_ratio: Option<f32>,
+    #[serde(default)]
+    avg_logprob: Option<f32>,
 }
 
 // ── Deepgram Nova-3 Data Structures ─────────────────────────────────────────
@@ -101,15 +107,226 @@ struct DeepgramWord {
 }
 
 pub fn build_whisper_prompt(custom_vocab: Option<&str>) -> String {
-    let mut prompt = "Sermon transcript in Nigerian English, Christian preaching, Bible exposition, scripture readings, Yoruba interjections (Hallelujah, Amen, Pastor, Apostle, Jesus Christ, Holy Spirit, Jehovah, Lord God, Bible).".to_string();
+    let mut prompt = "Hallelujah, Amen. Praise the Lord Jesus Christ. Let us open our Bibles to the Word of God today. Pastor, Apostle, Holy Spirit, Jehovah God.".to_string();
     if let Some(vocab) = custom_vocab {
         let clean = vocab.trim();
         if !clean.is_empty() {
-            prompt.push_str(" Church Vocabulary: ");
+            prompt.push_str(" ");
             prompt.push_str(clean);
         }
     }
     prompt
+}
+
+pub fn clean_segment_text(raw: &str) -> String {
+    let mut text = raw.trim().to_string();
+
+    // Remove musical notes and symbols
+    text = text.replace(['♪', '♫', '♬', '♩'], "");
+
+    // Remove common inline bracketed sound tags
+    let tags = [
+        "[music]", "(music)", "[applause]", "(applause)",
+        "[laughter]", "(laughter)", "[silence]", "(silence)",
+        "[cheering]", "(cheering)", "[singing]", "(singing)",
+    ];
+    for tag in tags {
+        while let Some(pos) = text.to_lowercase().find(tag) {
+            let mut new_text = text[..pos].to_string();
+            new_text.push_str(&text[pos + tag.len()..]);
+            text = new_text;
+        }
+    }
+
+    text.trim().to_string()
+}
+
+pub fn is_hallucination_or_music(
+    text: &str,
+    no_speech_prob: Option<f32>,
+    compression_ratio: Option<f32>,
+    avg_logprob: Option<f32>,
+) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+
+    // 1. Model confidence / no-speech probability checks (from Whisper verbose_json)
+    if let Some(nsp) = no_speech_prob {
+        // Whisper indicates silence, background music, or non-speech noise
+        if nsp > 0.60 {
+            return true;
+        }
+        // Elevated no-speech prob with poor acoustic confidence
+        if nsp > 0.35 && avg_logprob.unwrap_or(0.0) < -0.80 {
+            return true;
+        }
+    }
+
+    // 2. High compression ratio indicates degenerate repetition loops
+    if let Some(cr) = compression_ratio {
+        if cr > 2.2 {
+            return true;
+        }
+    }
+
+    // 3. Extremely poor acoustic confidence
+    if let Some(lp) = avg_logprob {
+        if lp < -1.40 {
+            return true;
+        }
+    }
+
+    // 4. Pure non-speech / music markers
+    let lower = trimmed.to_lowercase();
+    let stripped_symbols = lower
+        .replace(['♪', '♫', '♬', '♩', '*', '#', '-', '_', '~', ' '], "")
+        .trim()
+        .to_string();
+    if stripped_symbols.is_empty() {
+        return true;
+    }
+
+    // Check bracketed music/sound tags
+    if (lower.starts_with('[') && lower.ends_with(']'))
+        || (lower.starts_with('(') && lower.ends_with(')'))
+    {
+        let inner = lower[1..lower.len() - 1].trim();
+        if inner.contains("music")
+            || inner.contains("applause")
+            || inner.contains("laughter")
+            || inner.contains("cheering")
+            || inner.contains("silence")
+            || inner.contains("instrumental")
+            || inner.contains("singing")
+            || inner.contains("sound")
+            || inner.is_empty()
+        {
+            return true;
+        }
+    }
+
+    // 5. Common YouTube subtitle credits and web hallucination artifacts
+    const CREDIT_HALLUCINATIONS: &[&str] = &[
+        "subtitles by",
+        "subtitles made by",
+        "subtitles created by",
+        "subtitled by",
+        "captioned by",
+        "captions by",
+        "closed captions by",
+        "translated by",
+        "transcribed by",
+        "transcript by",
+        "reading text in",
+        "community contributor",
+        "amara.org",
+        "opensubtitles",
+        "youtube.com",
+        "like and subscribe",
+        "thanks for watching",
+        "thank you for watching",
+        "subscribe to my channel",
+        "subscribe to the channel",
+        "bell icon",
+        "see you next time",
+        "all rights reserved",
+        "http://",
+        "https://",
+        "www.",
+    ];
+
+    for credit in CREDIT_HALLUCINATIONS {
+        if lower.contains(credit) {
+            return true;
+        }
+    }
+
+    // 6. Prompt echo detection
+    const PROMPT_ECHOES: &[&str] = &[
+        "sermon transcript",
+        "nigerian english",
+        "church vocabulary",
+        "bible exposition",
+        "yoruba interjections",
+    ];
+    for echo in PROMPT_ECHOES {
+        if lower.contains(echo) {
+            return true;
+        }
+    }
+
+    // 7. Repetition loops & degenerate sequences
+    let words: Vec<&str> = trimmed
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+        .filter(|w| !w.is_empty())
+        .collect();
+
+    if words.len() >= 3 {
+        let lower_words: Vec<String> = words.iter().map(|w| w.to_lowercase()).collect();
+
+        // 7a. Single word dominating the segment (>= 70% of words, at least 4 occurrences)
+        let mut word_counts = std::collections::HashMap::new();
+        for w in &lower_words {
+            *word_counts.entry(w.as_str()).or_insert(0usize) += 1;
+        }
+        if let Some((_, &max_count)) = word_counts.iter().max_by_key(|(_, &c)| c) {
+            if max_count >= 4 && (max_count as f32 / lower_words.len() as f32) >= 0.70 {
+                return true;
+            }
+        }
+
+        // 7b. Consecutive 2-gram repetitions (e.g. "The Merec, The Merec, The Merec.")
+        if lower_words.len() >= 6 {
+            let mut repeat_count = 1;
+            for i in (0..lower_words.len().saturating_sub(3)).step_by(2) {
+                if lower_words[i] == lower_words[i + 2] && lower_words[i + 1] == lower_words[i + 3] {
+                    repeat_count += 1;
+                    if repeat_count >= 3 {
+                        return true;
+                    }
+                } else {
+                    repeat_count = 1;
+                }
+            }
+        }
+
+        // 7c. Low vocabulary diversity for longer segments
+        if lower_words.len() >= 6 {
+            let unique_ratio = (word_counts.len() as f32) / (lower_words.len() as f32);
+            if unique_ratio < 0.35 {
+                return true;
+            }
+        }
+    }
+
+    // 8. Consonant salad / Gibberish detection
+    // e.g. "CKG, SLP H5 R6 Rea Apoosa... CTZ, H2 OMS TRIGS, MDT, PARA, KWDIEN, PPT, PARA..."
+    if words.len() >= 4 {
+        let is_vowel = |c: char| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u' | 'y' | 'A' | 'E' | 'I' | 'O' | 'U' | 'Y');
+        let words_without_vowels = words
+            .iter()
+            .filter(|w| w.len() >= 2 && !w.chars().any(is_vowel))
+            .count();
+
+        let non_single_letter_words = words.iter().filter(|w| w.len() >= 2).count();
+        if non_single_letter_words >= 3 && (words_without_vowels as f32 / non_single_letter_words as f32) >= 0.30 {
+            return true;
+        }
+
+        // All-caps acronym clustering (e.g. CKG, SLP, CTZ, MDT, PARA, KWDIEN, PPT...)
+        let all_caps_words = words
+            .iter()
+            .filter(|w| w.len() >= 2 && w.chars().all(|c| c.is_uppercase() || c.is_numeric()))
+            .count();
+        if non_single_letter_words >= 4 && (all_caps_words as f32 / non_single_letter_words as f32) >= 0.65 {
+            return true;
+        }
+    }
+
+    false
 }
 
 pub async fn transcribe_audio(
@@ -302,12 +519,12 @@ fn parse_deepgram_response(
         // 1. Prefer utterances (natural pauses with precise timestamps)
         if let Some(utterances) = results.utterances {
             for u in utterances {
-                let text = u.transcript.trim().to_string();
-                if !text.is_empty() {
+                let clean = clean_segment_text(&u.transcript);
+                if !clean.is_empty() && !is_hallucination_or_music(&clean, None, None, None) {
                     segments.push(TranscriptSegment {
                         start: u.start,
                         end: u.end,
-                        text,
+                        text: clean,
                     });
                 }
             }
@@ -328,12 +545,14 @@ fn parse_deepgram_response(
                         for p in paragraphs {
                             if let Some(sentences) = &p.sentences {
                                 for s in sentences {
-                                    let text = s.text.trim().to_string();
-                                    if !text.is_empty() {
+                                    let clean = clean_segment_text(&s.text);
+                                    if !clean.is_empty()
+                                        && !is_hallucination_or_music(&clean, None, None, None)
+                                    {
                                         segments.push(TranscriptSegment {
                                             start: s.start,
                                             end: s.end,
-                                            text,
+                                            text: clean,
                                         });
                                     }
                                 }
@@ -355,11 +574,17 @@ fn parse_deepgram_response(
                         }
                         current_words.push(w.word.as_str());
                         if current_words.len() >= 10 || i == words.len() - 1 {
-                            segments.push(TranscriptSegment {
-                                start: seg_start,
-                                end: w.end,
-                                text: current_words.join(" "),
-                            });
+                            let text = current_words.join(" ");
+                            let clean = clean_segment_text(&text);
+                            if !clean.is_empty()
+                                && !is_hallucination_or_music(&clean, None, None, None)
+                            {
+                                segments.push(TranscriptSegment {
+                                    start: seg_start,
+                                    end: w.end,
+                                    text: clean,
+                                });
+                            }
                             current_words.clear();
                         }
                     }
@@ -370,12 +595,12 @@ fn parse_deepgram_response(
 
                 // 4. Raw alternative transcript
                 if let Some(full) = &alt.transcript {
-                    let text = full.trim().to_string();
-                    if !text.is_empty() {
+                    let clean = clean_segment_text(full);
+                    if !clean.is_empty() && !is_hallucination_or_music(&clean, None, None, None) {
                         segments.push(TranscriptSegment {
                             start: 0.0,
                             end: fallback_duration,
-                            text,
+                            text: clean,
                         });
                     }
                 }
@@ -523,23 +748,43 @@ async fn transcribe_single_audio_file(
                     let mut segments = Vec::new();
                     if let Some(groq_segments) = parsed.segments {
                         for seg in groq_segments {
+                            if is_hallucination_or_music(
+                                &seg.text,
+                                seg.no_speech_prob,
+                                seg.compression_ratio,
+                                seg.avg_logprob,
+                            ) {
+                                tracing::info!(
+                                    "Filtering out music/hallucination segment [{:.2}s - {:.2}s]: \"{}\" (no_speech_prob={:?}, compression_ratio={:?}, avg_logprob={:?})",
+                                    seg.start + time_offset,
+                                    seg.end + time_offset,
+                                    seg.text.trim(),
+                                    seg.no_speech_prob,
+                                    seg.compression_ratio,
+                                    seg.avg_logprob,
+                                );
+                                continue;
+                            }
+
                             let start = seg.start + time_offset;
                             let end = seg.end + time_offset;
-                            let text = seg.text.trim().to_string();
+                            let text = clean_segment_text(&seg.text);
                             if !text.is_empty() {
                                 segments.push(TranscriptSegment { start, end, text });
                             }
                         }
                     } else if let Some(full_text) = parsed.text {
-                        let clean = full_text.trim().to_string();
-                        if !clean.is_empty() {
-                            let duration =
-                                ffmpeg::get_media_duration(audio_path).await.unwrap_or(30.0);
-                            segments.push(TranscriptSegment {
-                                start: time_offset,
-                                end: time_offset + duration,
-                                text: clean,
-                            });
+                        if !is_hallucination_or_music(&full_text, None, None, None) {
+                            let clean = clean_segment_text(&full_text);
+                            if !clean.is_empty() {
+                                let duration =
+                                    ffmpeg::get_media_duration(audio_path).await.unwrap_or(30.0);
+                                segments.push(TranscriptSegment {
+                                    start: time_offset,
+                                    end: time_offset + duration,
+                                    text: clean,
+                                });
+                            }
                         }
                     }
                     return Ok(segments);
@@ -715,4 +960,93 @@ pub fn stitch_transcript_chunks(
     }
 
     stitched
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_hallucination_or_music_youtube_credits() {
+        let text = "Subtitles made by Jnkoil Lormar reading text in Nigerian English TCG John Lee Kankaraman Chilana Digo Stardom to Gordand Shurda Hydebo Loon Bible Podcasts";
+        assert!(is_hallucination_or_music(text, None, None, None));
+
+        assert!(is_hallucination_or_music("Subtitles by Community Contributor", None, None, None));
+        assert!(is_hallucination_or_music("Closed captions by amara.org", None, None, None));
+        assert!(is_hallucination_or_music("Thanks for watching, like and subscribe!", None, None, None));
+    }
+
+    #[test]
+    fn test_is_hallucination_or_music_repetition_loops() {
+        let repeating_phrase = "The Merec, The Merec, The Merec.";
+        assert!(is_hallucination_or_music(repeating_phrase, None, None, None));
+
+        let single_word_loop = "Amen. Amen. Amen. Amen. Amen.";
+        assert!(is_hallucination_or_music(single_word_loop, None, None, None));
+    }
+
+    #[test]
+    fn test_is_hallucination_or_music_consonant_salad() {
+        let salad = "CKG, SLP H5 R6 Rea Apoosa, Bibernese, Tarniawongens... CTZ, H2 OMS TRIGS, MDT, PARA, KWDIEN, PPT, PARA, KULAGOSY, MIGATEI, ELMoHA GOLBYEN";
+        assert!(is_hallucination_or_music(salad, None, None, None));
+    }
+
+    #[test]
+    fn test_is_hallucination_or_music_probabilities() {
+        // High no_speech_prob
+        assert!(is_hallucination_or_music("Some murmur", Some(0.85), None, None));
+
+        // High no_speech_prob combined with poor logprob
+        assert!(is_hallucination_or_music("Some whisper", Some(0.45), None, Some(-0.95)));
+
+        // High compression ratio
+        assert!(is_hallucination_or_music("A loop text", None, Some(2.4), None));
+
+        // Valid speech
+        let valid = "In the beginning was the Word, and the Word was with God, and the Word was God.";
+        assert!(!is_hallucination_or_music(valid, Some(0.02), Some(1.2), Some(-0.15)));
+    }
+
+    #[test]
+    fn test_is_hallucination_or_music_music_tags() {
+        assert!(is_hallucination_or_music("[Music]", None, None, None));
+        assert!(is_hallucination_or_music("(music)", None, None, None));
+        assert!(is_hallucination_or_music("♪ ♫ ♬ ♩", None, None, None));
+        assert!(is_hallucination_or_music("[Applause]", None, None, None));
+    }
+
+    #[test]
+    fn test_clean_segment_text() {
+        assert_eq!(
+            clean_segment_text("♪ Jesus loves me this I know ♪"),
+            "Jesus loves me this I know"
+        );
+        assert_eq!(
+            clean_segment_text("[Music] Hallelujah Jesus"),
+            "Hallelujah Jesus"
+        );
+        assert_eq!(clean_segment_text("♪ ♫ ♬"), "");
+    }
+
+    #[test]
+    fn test_valid_sermon_speech_is_not_filtered() {
+        assert!(!is_hallucination_or_music(
+            "Praise the Lord Jesus Christ, let us open our Bibles to the Book of Psalms.",
+            None,
+            None,
+            None
+        ));
+        assert!(!is_hallucination_or_music(
+            "Holy, Holy, Holy is the Lord God Almighty, who was and is and is to come.",
+            None,
+            None,
+            None
+        ));
+        assert!(!is_hallucination_or_music(
+            "Amen.",
+            None,
+            None,
+            None
+        ));
+    }
 }
