@@ -318,9 +318,11 @@ pub async fn extract_clip_with_timeline_offset(
         } else {
             let bg_w = target_w / 2;
             let bg_h = target_h / 2;
+            // Blur at half-res (540×960 for 9:16) then scale up — significantly faster
+            // than blurring the full 1080×1920 frame. bilinear upscale hides any softness.
             format!(
                 "[0:v]split[fg_in][bg_in];\
-                 [bg_in]scale={bg_w}:{bg_h}:force_original_aspect_ratio=increase:force_divisible_by=2,crop={bg_w}:{bg_h}:(in_w-out_w)/2:(in_h-out_h)/2,boxblur=15:2,scale={target_w}:{target_h}:flags=bilinear[bg];\
+                 [bg_in]scale={bg_w}:{bg_h},boxblur=8:1,scale={target_w}:{target_h}:flags=bilinear[bg];\
                  [fg_in]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease:force_divisible_by=2[fg];\
                  [bg][fg]overlay=(W-w)/2:(H-h)/2{subtitle_filter}[v]"
             )
@@ -337,9 +339,9 @@ pub async fn extract_clip_with_timeline_offset(
             .arg("-pix_fmt")
             .arg("yuv420p")
             .arg("-crf")
-            .arg("21")
+            .arg("23")
             .arg("-preset")
-            .arg("veryfast")
+            .arg("ultrafast") // 2-3x faster than veryfast; imperceptible for social clips
             .arg("-c:a")
             .arg("aac")
             .arg("-b:a")
@@ -365,9 +367,9 @@ pub async fn extract_clip_with_timeline_offset(
             .arg("-pix_fmt")
             .arg("yuv420p")
             .arg("-crf")
-            .arg("21")
+            .arg("23")
             .arg("-preset")
-            .arg("veryfast")
+            .arg("ultrafast")
             .arg("-c:a")
             .arg("aac")
             .arg("-b:a")

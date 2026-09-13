@@ -604,7 +604,9 @@ pub async fn render_clip_to_disk(
         )
         .await;
 
-        let _ = tokio::fs::remove_file(&section_video_path).await;
+        // NOTE: section_video_path is intentionally NOT deleted — it is keyed by
+        // video_id+start+end in .temp_clips, so re-exporting the same clip with
+        // a different caption style or aspect ratio will skip the yt-dlp download.
         res?;
     } else {
         // Local source (uploaded video or audio file)
@@ -702,7 +704,7 @@ pub async fn render_clip_range_to_disk(
         )
         .await;
 
-        let _ = tokio::fs::remove_file(&section_video_path).await;
+        // section_video_path kept on disk — re-exports of same range skip yt-dlp
         res?;
     } else {
         let input_source = if let Some(audio_p) = &sermon.audio_path {
