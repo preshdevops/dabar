@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::models::TranscriptSegment;
 
@@ -251,10 +251,10 @@ pub async fn extract_clip_with_timeline_offset(
     output_path: &Path,
     start_time: f32,
     end_time: f32,
-    timeline_offset: f32,
+    _timeline_offset: f32,
     aspect_ratio: &str,
-    caption_segments: Option<&[TranscriptSegment]>,
-    caption_style: Option<&str>,
+    _caption_segments: Option<&[TranscriptSegment]>,
+    _caption_style: Option<&str>,
 ) -> Result<()> {
     if start_time < 0.0 || end_time <= start_time {
         anyhow::bail!(
@@ -271,32 +271,7 @@ pub async fn extract_clip_with_timeline_offset(
         _ => (1080u32, 1920u32), // Default 9:16 vertical
     };
 
-    // Prepare ASS subtitle file if requested
-    let mut temp_ass_path: Option<PathBuf> = None;
-    let mut subtitle_filter = String::new();
-
-    if let Some(style) = caption_style.filter(|s| !s.trim().is_empty() && *s != "none") {
-        if let Some(segments) = caption_segments {
-            if let Some(ass_content) = generate_ass_subtitles(
-                segments,
-                start_time,
-                end_time,
-                timeline_offset,
-                target_w,
-                target_h,
-                style,
-            ) {
-                let ass_file =
-                    output_path.with_extension(format!("tmp_{}.ass", std::process::id()));
-                if let Ok(_) = tokio::fs::write(&ass_file, ass_content.as_bytes()).await {
-                    let escaped = escape_ffmpeg_filter_path(&ass_file);
-                    subtitle_filter = format!(",subtitles={escaped}");
-                    temp_ass_path = Some(ass_file);
-                }
-            }
-        }
-    }
-
+    // No subtitle burn-in: exported clips are clean video without burnt-in captions.
     let mut cmd = get_binary_command("ffmpeg");
     cmd.arg("-y")
         .arg("-threads")
@@ -313,18 +288,19 @@ pub async fn extract_clip_with_timeline_offset(
     if has_video {
         let filter_str = if aspect_ratio == "16:9" {
             format!(
-                "[0:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:color=black{subtitle_filter}[v]"
+                "[0:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[v]"
             )
         } else {
-            let bg_w = target_w / 2;
-            let bg_h = target_h / 2;
-            // Blur at half-res (540×960 for 9:16) then scale up — significantly faster
-            // than blurring the full 1080×1920 frame. bilinear upscale hides any softness.
+            // For 9:16 vertical or 1:1 square:
+            // 1. Background: scale to cover (force_original_aspect_ratio=increase), center crop, blur, setsar=1.
+            //    Never scale directly without aspect ratio preservation (which caused the severe horizontal stretch bug).
+            // 2. Foreground: scale to fit inside target box, preserve exact original aspect ratio, setsar=1.
+            // 3. Overlay: center foreground on background, setsar=1.
             format!(
                 "[0:v]split[fg_in][bg_in];\
-                 [bg_in]scale={bg_w}:{bg_h},boxblur=8:1,scale={target_w}:{target_h}:flags=bilinear[bg];\
-                 [fg_in]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease:force_divisible_by=2[fg];\
-                 [bg][fg]overlay=(W-w)/2:(H-h)/2{subtitle_filter}[v]"
+                 [bg_in]scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h},boxblur=20:5,setsar=1[bg];\
+                 [fg_in]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1[fg];\
+                 [bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v]"
             )
         };
 
@@ -351,10 +327,10 @@ pub async fn extract_clip_with_timeline_offset(
         let wave_w = (((target_w as f32 * 0.88) as u32) / 2) * 2;
         let wave_h = (((target_h as f32 * 0.22) as u32) / 2) * 2;
         let filter_str = format!(
-            "color=c=0x080c14:s={target_w}x{target_h}:d={duration:.3}:r=30[bg];\
+            "color=c=0x080c14:s={target_w}x{target_h}:d={duration:.3}:r=30,setsar=1[bg];\
              [0:a]asplit[a_wave][a_out];\
              [a_wave]showwaves=s={wave_w}x{wave_h}:mode=cline:colors=0xd4913a:r=30[wave];\
-             [bg][wave]overlay=(W-w)/2:(H-h)/2:shortest=1{subtitle_filter}[v]"
+             [bg][wave]overlay=(W-w)/2:(H-h)/2:shortest=1,setsar=1[v]"
         );
         cmd.arg("-filter_complex")
             .arg(&filter_str)
@@ -382,11 +358,6 @@ pub async fn extract_clip_with_timeline_offset(
         .output()
         .await
         .context("executing ffmpeg process");
-
-    // Clean up temporary ASS subtitle file if one was written
-    if let Some(ass_file) = temp_ass_path {
-        let _ = tokio::fs::remove_file(ass_file).await;
-    }
 
     let output = output?;
 

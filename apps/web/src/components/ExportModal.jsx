@@ -23,27 +23,6 @@ const ASPECT_RATIOS = [
   },
 ];
 
-const CAPTION_STYLES = [
-  {
-    key: "amber",
-    label: "Warm Amber",
-    preview: "Warm amber emphasis with crisp contrast",
-    cssClass: "font-serif text-[#D4913A] font-bold drop-shadow-[0_0_10px_rgba(212,145,58,0.55)]",
-  },
-  {
-    key: "kinetic",
-    label: "Kinetic White",
-    preview: "Crisp white subtitle with high-visibility backing",
-    cssClass: "font-serif uppercase font-extrabold text-white",
-  },
-  {
-    key: "editorial",
-    label: "Sacred Editorial",
-    preview: "High-contrast Fraunces serif with soft amber tint",
-    cssClass: "font-editorial italic font-semibold text-[#F6D9B0]",
-  },
-];
-
 export default function ExportModal({
   clip,
   sermonTitle,
@@ -56,7 +35,6 @@ export default function ExportModal({
   renderError = null,
 }) {
   const [aspectRatio, setAspectRatio] = useState("9:16");
-  const [captionStyle, setCaptionStyle] = useState("editorial");
   const [customFileName, setCustomFileName] = useState(
     clip?.highlight_title || clip?.title || "sermon_clip"
   );
@@ -67,8 +45,6 @@ export default function ExportModal({
       ? Math.max(1, Math.round(clip.end - clip.start))
       : 45;
 
-  const currentCaptionObj =
-    CAPTION_STYLES.find((c) => c.key === captionStyle) || CAPTION_STYLES[0];
 
   // When export completes, resolve asset URL for the newly rendered MP4 video
   useEffect(() => {
@@ -201,14 +177,6 @@ export default function ExportModal({
                   </p>
                 </div>
 
-                {/* Subtitle Typography Overlay */}
-                <div className="relative z-10 text-center pb-1">
-                  <p
-                    className={`${currentCaptionObj.cssClass} text-[10px] leading-tight drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)] line-clamp-2`}
-                  >
-                    "{clip?.why ? clip.why.slice(0, 50) + "…" : "Faith cometh by hearing the word…"}"
-                  </p>
-                </div>
               </div>
 
               <span className="text-[11px] text-muted mt-3 font-medium">
@@ -249,34 +217,6 @@ export default function ExportModal({
                       </p>
                       <p className="text-[10px] text-muted truncate">
                         {fmt.sub}
-                      </p>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Subtitle Style */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-primary block">
-                  Subtitle Style
-                </label>
-                <div className="grid grid-cols-3 gap-2">
-                  {CAPTION_STYLES.map((cap) => (
-                    <button
-                      key={cap.key}
-                      type="button"
-                      onClick={() => setCaptionStyle(cap.key)}
-                      className={`p-2.5 rounded-lg border text-left transition-all ${
-                        captionStyle === cap.key
-                          ? "border-accent bg-accent-muted text-accent font-semibold"
-                          : "border-border bg-surface-elevated hover:bg-surface-hover text-secondary"
-                      }`}
-                    >
-                      <p className="text-xs text-primary font-medium">
-                        {cap.label}
-                      </p>
-                      <p className="text-[10px] text-muted mt-0.5 line-clamp-2">
-                        {cap.preview}
                       </p>
                     </button>
                   ))}
@@ -335,7 +275,7 @@ export default function ExportModal({
               icon={isRendering ? "bx-loader-alt bx-spin" : "bx-film"}
               disabled={isRendering}
               onClick={() =>
-                onConfirmExport(clip, aspectRatio, captionStyle, customFileName)
+                onConfirmExport(clip, aspectRatio, "none", customFileName)
               }
             >
               {isRendering ? "Creating Video…" : "Create Video Clip"}
