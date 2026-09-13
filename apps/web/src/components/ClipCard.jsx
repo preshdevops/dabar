@@ -81,7 +81,7 @@ export default function ClipCard({
 
   if (featured) {
     return (
-      <div className="studio-card-elevated p-5 sm:p-6 space-y-4 border-accent/30 bg-surface">
+      <div className="studio-card-elevated p-5 sm:p-6 space-y-4 border-accent/30">
         {/* Header Meta */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
@@ -113,7 +113,7 @@ export default function ClipCard({
               <i className="bx bxs-quote-left text-xs" />
               <span>Transcript Excerpt</span>
             </div>
-            <p className="font-editorial text-base text-primary/90 italic leading-relaxed">
+            <p className="font-editorial text-base text-primary italic leading-relaxed">
               "{clip.why}"
             </p>
           </div>
