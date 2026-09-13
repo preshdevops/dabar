@@ -95,72 +95,232 @@ pub const BIBLE_BOOKS: &[&str] = &[
     "Revelation",
 ];
 
-/// Detects scripture references like "John 3:16", "Romans 8:28", "Psalm 23:1-4" in text.
+/// Common spoken variations and aliases for Bible books in sermon transcripts
+pub const BOOK_ALIASES: &[(&str, &str)] = &[
+    ("1st corinthians", "1 Corinthians"),
+    ("first corinthians", "1 Corinthians"),
+    ("2nd corinthians", "2 Corinthians"),
+    ("second corinthians", "2 Corinthians"),
+    ("1st thessalonians", "1 Thessalonians"),
+    ("first thessalonians", "1 Thessalonians"),
+    ("2nd thessalonians", "2 Thessalonians"),
+    ("second thessalonians", "2 Thessalonians"),
+    ("1st timothy", "1 Timothy"),
+    ("first timothy", "1 Timothy"),
+    ("2nd timothy", "2 Timothy"),
+    ("second timothy", "2 Timothy"),
+    ("1st peter", "1 Peter"),
+    ("first peter", "1 Peter"),
+    ("2nd peter", "2 Peter"),
+    ("second peter", "2 Peter"),
+    ("1st john", "1 John"),
+    ("first john", "1 John"),
+    ("2nd john", "2 John"),
+    ("second john", "2 John"),
+    ("3rd john", "3 John"),
+    ("third john", "3 John"),
+    ("1st samuel", "1 Samuel"),
+    ("first samuel", "1 Samuel"),
+    ("2nd samuel", "2 Samuel"),
+    ("second samuel", "2 Samuel"),
+    ("1st kings", "1 Kings"),
+    ("first kings", "1 Kings"),
+    ("2nd kings", "2 Kings"),
+    ("second kings", "2 Kings"),
+    ("1st chronicles", "1 Chronicles"),
+    ("first chronicles", "1 Chronicles"),
+    ("2nd chronicles", "2 Chronicles"),
+    ("second chronicles", "2 Chronicles"),
+    ("song of songs", "Song of Solomon"),
+    ("revelations", "Revelation"),
+];
+
+/// Common English words that also happen to be names of Bible books.
+/// For these, we require an explicit chapter or verse number (e.g. "Mark 4", "Job 1:21", "Acts 2:4")
+/// to avoid false positives like "mark my words", "job market", or "interacts".
+const AMBIGUOUS_BOOK_NAMES: &[&str] = &["Mark", "Job", "Acts", "James", "Ruth"];
+
+/// Detects scripture references like "John 3:16", "Romans 8:28", "Psalm 23", "First Corinthians 13:4-8" in text.
 pub fn detect_scripture_references(text: &str, timestamp: f32) -> Vec<ScriptureRef> {
     let mut references = Vec::new();
+    let lower_text = text.to_lowercase();
 
+    // Prepare list of (pattern, canonical_book_name) sorted by pattern length descending
+    // to match specific phrases ("first corinthians") before shorter ones ("corinthians").
+    let mut patterns: Vec<(String, &'static str)> = Vec::new();
+    for (alias, canonical) in BOOK_ALIASES {
+        patterns.push((alias.to_string(), canonical));
+    }
     for &book in BIBLE_BOOKS {
-        let lower_text = text.to_lowercase();
-        let lower_book = book.to_lowercase();
+        patterns.push((book.to_lowercase(), book));
+    }
+    patterns.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
 
+    let mut matched_spans: Vec<(usize, usize)> = Vec::new();
+
+    for (pat, canonical_book) in &patterns {
         let mut search_idx = 0;
-        while let Some(pos) = lower_text[search_idx..].find(&lower_book) {
+        while let Some(pos) = lower_text[search_idx..].find(pat) {
             let actual_pos = search_idx + pos;
-            let after = &text[actual_pos + book.len()..];
+            let end_pos = actual_pos + pat.len();
 
-            // Look for chapter:verse pattern after book name
-            if let Some(ref_str) = parse_chapter_verse(after) {
-                references.push(ScriptureRef {
-                    book: book.to_string(),
-                    reference: format!("{book} {ref_str}"),
-                    timestamp,
-                });
+            // 1. Verify start word boundary
+            let start_boundary = if actual_pos == 0 {
+                true
+            } else {
+                let prev_char = text[..actual_pos].chars().last();
+                prev_char.map(|c| !c.is_alphanumeric()).unwrap_or(true)
+            };
+
+            // 2. Verify end word boundary
+            let end_boundary = if end_pos >= text.len() {
+                true
+            } else {
+                let next_char = text[end_pos..].chars().next();
+                next_char.map(|c| !c.is_alphanumeric()).unwrap_or(true)
+            };
+
+            if start_boundary && end_boundary {
+                // Check for overlapping span with an already matched longer pattern
+                let overlaps = matched_spans
+                    .iter()
+                    .any(|&(s, e)| actual_pos < e && end_pos > s);
+
+                if !overlaps {
+                    let after = &text[end_pos..];
+                    if let Some(ref_str) = parse_chapter_verse(after) {
+                        matched_spans.push((actual_pos, end_pos));
+                        references.push(ScriptureRef {
+                            book: canonical_book.to_string(),
+                            reference: format!("{canonical_book} {ref_str}"),
+                            timestamp,
+                        });
+                    } else if !AMBIGUOUS_BOOK_NAMES.contains(canonical_book) {
+                        // Check if book was preceded by "book of" or "epistle of" or "gospel of"
+                        let prefix = text[..actual_pos].trim_end().to_lowercase();
+                        if prefix.ends_with("book of")
+                            || prefix.ends_with("gospel of")
+                            || prefix.ends_with("epistle of")
+                        {
+                            matched_spans.push((actual_pos, end_pos));
+                            references.push(ScriptureRef {
+                                book: canonical_book.to_string(),
+                                reference: canonical_book.to_string(),
+                                timestamp,
+                            });
+                        }
+                    }
+                }
             }
 
-            search_idx = actual_pos + book.len();
+            search_idx = actual_pos + pat.len();
         }
     }
 
+    // Sort references by appearance order
+    references.sort_by(|a, b| {
+        a.reference
+            .cmp(&b.reference)
+    });
+    references.dedup_by(|a, b| a.reference == b.reference);
     references
 }
 
-/// Helper to parse chapter:verse (e.g. " 3:16", " 8:28-30", " chapter 3 verse 16")
+/// Helper to parse chapter:verse variations like:
+/// - " 3:16", " 8:28-30", " 8:28, 30"
+/// - " chapter 3 verse 16", " chapter 3, verse 16", " chapter 3:16"
+/// - " 8 verse 28", " 8, verse 28", " 8 verses 28-30", " 8 v 28"
+/// - " 23" (for Psalms/single chapters like Psalm 23)
 fn parse_chapter_verse(s: &str) -> Option<String> {
-    let trimmed = s.trim_start();
+    let lower = s.trim_start().to_lowercase();
+    let trimmed = lower.as_str();
 
-    // Skip optional "chapter "
-    let rest = if trimmed.to_lowercase().starts_with("chapter ") {
-        &trimmed[8..]
+    // Check for optional "chapter " or "ch " or "ch. "
+    let after_chapter = if let Some(rest) = trimmed.strip_prefix("chapter ") {
+        rest.trim_start()
+    } else if let Some(rest) = trimmed.strip_prefix("ch. ") {
+        rest.trim_start()
+    } else if let Some(rest) = trimmed.strip_prefix("ch ") {
+        rest.trim_start()
     } else {
         trimmed
     };
 
-    let mut result = String::new();
-    let mut saw_digit = false;
+    // Extract chapter digits
+    let mut chars = after_chapter.char_indices();
+    let mut chapter_digits = String::new();
+    let mut end_ch_idx = 0;
 
-    for c in rest.chars() {
-        if c.is_ascii_digit() || c == ':' || c == '-' || c == ',' {
-            result.push(c);
-            if c.is_ascii_digit() {
-                saw_digit = true;
-            }
-        } else if saw_digit && (c == ' ' || c == '.' || c == ';') {
-            break;
-        } else if !saw_digit && c == ' ' {
-            continue;
+    for (idx, c) in chars.by_ref() {
+        if c.is_ascii_digit() {
+            chapter_digits.push(c);
+            end_ch_idx = idx + 1;
         } else {
             break;
         }
     }
 
-    let trimmed_result = result
-        .trim_matches(|c: char| !c.is_ascii_digit())
-        .to_string();
-    if trimmed_result.contains(':') && saw_digit {
-        Some(trimmed_result)
-    } else if saw_digit && trimmed_result.len() <= 3 {
-        // e.g. "Psalm 23"
-        Some(trimmed_result)
+    if chapter_digits.is_empty() {
+        return None;
+    }
+
+    let remainder = after_chapter[end_ch_idx..].trim_start();
+
+    // Check separator connecting chapter to verse
+    let after_sep = if let Some(rest) = remainder.strip_prefix(':') {
+        Some(rest.trim_start())
+    } else if let Some(rest) = remainder.strip_prefix(", verse ") {
+        Some(rest.trim_start())
+    } else if let Some(rest) = remainder.strip_prefix(", verses ") {
+        Some(rest.trim_start())
+    } else if let Some(rest) = remainder.strip_prefix("verse ") {
+        Some(rest.trim_start())
+    } else if let Some(rest) = remainder.strip_prefix("verses ") {
+        Some(rest.trim_start())
+    } else if let Some(rest) = remainder.strip_prefix("v. ") {
+        Some(rest.trim_start())
+    } else if let Some(rest) = remainder.strip_prefix("v ") {
+        Some(rest.trim_start())
+    } else if let Some(rest) = remainder.strip_prefix(", v. ") {
+        Some(rest.trim_start())
+    } else if let Some(rest) = remainder.strip_prefix(", v ") {
+        Some(rest.trim_start())
+    } else {
+        None
+    };
+
+    if let Some(verse_str) = after_sep {
+        // Parse verse part: digits, dashes, commas
+        let mut verse_digits = String::new();
+        let mut v_chars = verse_str.chars().peekable();
+        while let Some(c) = v_chars.next() {
+            if c.is_ascii_digit() || c == '-' || c == ',' {
+                verse_digits.push(c);
+            } else if c == ' ' {
+                // Check for "to " range e.g. "16 to 18"
+                if v_chars.clone().take(3).collect::<String>() == "to " {
+                    verse_digits.push('-');
+                    v_chars.next(); // 't'
+                    v_chars.next(); // 'o'
+                    v_chars.next(); // ' '
+                } else if v_chars.peek().map(|nc| nc.is_ascii_digit() || *nc == '-' || *nc == ',').unwrap_or(false) {
+                    continue;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        let cleaned_verse = verse_digits.trim_matches(|c: char| !c.is_ascii_digit());
+        if !cleaned_verse.is_empty() {
+            return Some(format!("{chapter_digits}:{cleaned_verse}"));
+        }
+    }
+
+    // Single chapter / Psalm reference (1-3 digits)
+    if chapter_digits.len() <= 3 {
+        Some(chapter_digits)
     } else {
         None
     }
@@ -362,6 +522,46 @@ mod tests {
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].book, "John");
         assert_eq!(refs[0].reference, "John 3:16");
+    }
+
+    #[test]
+    fn test_detect_scripture_spoken_variations() {
+        // Spoken chapter and verse
+        let text1 = "Look at Romans chapter 8 verse 28 where we see all things work together.";
+        let refs1 = detect_scripture_references(text1, 5.0);
+        assert_eq!(refs1.len(), 1);
+        assert_eq!(refs1[0].book, "Romans");
+        assert_eq!(refs1[0].reference, "Romans 8:28");
+
+        // Psalm without verse
+        let text2 = "Let us read from Psalm 23 for comfort.";
+        let refs2 = detect_scripture_references(text2, 12.0);
+        assert_eq!(refs2.len(), 1);
+        assert_eq!(refs2[0].book, "Psalm");
+        assert_eq!(refs2[0].reference, "Psalm 23");
+
+        // Spoken ordinal book aliases
+        let text3 = "In First Corinthians 13:4-8 Paul describes love.";
+        let refs3 = detect_scripture_references(text3, 20.0);
+        assert_eq!(refs3.len(), 1);
+        assert_eq!(refs3[0].book, "1 Corinthians");
+        assert_eq!(refs3[0].reference, "1 Corinthians 13:4-8");
+
+        let text4 = "Remember 2nd Timothy 1:7, God gave us a spirit of power.";
+        let refs4 = detect_scripture_references(text4, 30.0);
+        assert_eq!(refs4.len(), 1);
+        assert_eq!(refs4[0].book, "2 Timothy");
+        assert_eq!(refs4[0].reference, "2 Timothy 1:7");
+    }
+
+    #[test]
+    fn test_detect_scripture_avoids_false_positives() {
+        // "interacts" shouldn't match "Acts"
+        // "job market" shouldn't match "Job"
+        // "mark my words" shouldn't match "Mark"
+        let text = "He interacts with candidates in the job market, and mark my words, they succeed.";
+        let refs = detect_scripture_references(text, 15.0);
+        assert_eq!(refs.len(), 0, "Common words should not trigger false positive citations");
     }
 
     #[test]

@@ -108,7 +108,7 @@ pub async fn run_pipeline(
     app_data_dir: PathBuf,
     _ollama_url: String,
     _ollama_model: String,
-    _offline_mode: bool,
+    offline_mode: bool,
 ) -> Result<()> {
     tracing::info!("🚀 [Pipeline Start] Processing sermon ID: {sermon_id}");
     let temp_dir = std::env::temp_dir().join(format!("dabar_{sermon_id}"));
@@ -323,65 +323,124 @@ pub async fn run_pipeline(
         total_candidates,
         passed_candidates,
     ) = {
-        match dabar_core::llm::analyze_sermon(api_key_opt, &segments).await {
-            Ok(analysis) => {
-                let total_passed = analysis.highlights_report.total_passed;
-                let chapter_count = analysis.chapters.len();
-                emit(
-                    &app,
-                    sermon_id,
-                    "detecting",
-                    100,
-                    &format!(
-                        "Generated {} topic chapters and {} key moments.",
-                        chapter_count, total_passed
-                    ),
+        if offline_mode || api_key_opt.is_none() {
+            emit(
+                &app,
+                sermon_id,
+                "detecting",
+                25,
+                "Analyzing sermon audio volume & dynamic loudness peaks…",
+            );
+            let audio_profile = dabar_core::ffmpeg::detect_audio_loudness_peaks(&audio_path).await.ok();
+            if let Some(prof) = &audio_profile {
+                tracing::info!(
+                    "Extracted audio loudness profile for sermon {sermon_id}: baseline {:.1} LUFS, {} peaks",
+                    prof.integrated_loudness,
+                    prof.peaks.len()
                 );
-                let status_str = match analysis.highlights_report.status {
-                    dabar_core::llm::HighlightDetectionStatus::Success => "success",
-                    dabar_core::llm::HighlightDetectionStatus::Heuristic => "heuristic",
-                    dabar_core::llm::HighlightDetectionStatus::NoCandidatesProposed => {
-                        "no_candidates"
-                    }
-                    dabar_core::llm::HighlightDetectionStatus::AllCandidatesFiltered => {
-                        "all_filtered"
-                    }
-                    dabar_core::llm::HighlightDetectionStatus::Failed => "failed",
-                };
-                (
-                    analysis.highlights_report.highlights,
-                    analysis.chapters,
-                    Some(status_str.to_string()),
-                    analysis.highlights_report.error_message,
-                    Some(analysis.highlights_report.total_proposed as u32),
-                    Some(total_passed as u32),
-                )
             }
-            Err(err) => {
-                let err_msg = err.to_string();
-                tracing::warn!("Analysis fallback on sermon {sermon_id}: {err_msg}");
-                let fallback_analysis =
-                    dabar_core::llm::analyze_sermon_offline_heuristics(&segments);
-                let total_passed = fallback_analysis.highlights_report.total_passed;
-                let chapter_count = fallback_analysis.chapters.len();
-                emit(
-                    &app,
-                    sermon_id,
-                    "detecting",
-                    100,
-                    &format!(
-                        "Generated {} chapters and {} moments.",
-                        chapter_count, total_passed
-                    ),
-                );
-                (
-                    fallback_analysis.highlights_report.highlights,
-                    fallback_analysis.chapters,
-                    Some("heuristic".to_string()),
-                    Some("Cloud AI unavailable, used keyword detection".to_string()),
-                    Some(total_passed as u32),
-                    Some(total_passed as u32),
-                )
+            emit(
+                &app,
+                sermon_id,
+                "detecting",
+                60,
+                "Detecting scripture citations, key points & highlight clusters…",
+            );
+            let analysis = dabar_core::llm::analyze_sermon_offline_heuristics_with_audio(
+                &segments,
+                audio_profile.as_ref().map(|p| p.peaks.as_slice()),
+            );
+            let total_passed = analysis.highlights_report.total_passed;
+            let chapter_count = analysis.chapters.len();
+            emit(
+                &app,
+                sermon_id,
+                "detecting",
+                100,
+                &format!(
+                    "Generated {} topic chapters and {} key moments (offline heuristics).",
+                    chapter_count, total_passed
+                ),
+            );
+            (
+                analysis.highlights_report.highlights,
+                analysis.chapters,
+                Some("heuristic".to_string()),
+                Some("Generated via offline sermon heuristics and audio loudness analysis".to_string()),
+                Some(analysis.highlights_report.total_proposed as u32),
+                Some(total_passed as u32),
+            )
+        } else {
+            match dabar_core::llm::analyze_sermon(api_key_opt, &segments).await {
+                Ok(analysis) => {
+                    let total_passed = analysis.highlights_report.total_passed;
+                    let chapter_count = analysis.chapters.len();
+                    emit(
+                        &app,
+                        sermon_id,
+                        "detecting",
+                        100,
+                        &format!(
+                            "Generated {} topic chapters and {} key moments.",
+                            chapter_count, total_passed
+                        ),
+                    );
+                    let status_str = match analysis.highlights_report.status {
+                        dabar_core::llm::HighlightDetectionStatus::Success => "success",
+                        dabar_core::llm::HighlightDetectionStatus::Heuristic => "heuristic",
+                        dabar_core::llm::HighlightDetectionStatus::NoCandidatesProposed => {
+                            "no_candidates"
+                        }
+                        dabar_core::llm::HighlightDetectionStatus::AllCandidatesFiltered => {
+                            "all_filtered"
+                        }
+                        dabar_core::llm::HighlightDetectionStatus::Failed => "failed",
+                    };
+                    (
+                        analysis.highlights_report.highlights,
+                        analysis.chapters,
+                        Some(status_str.to_string()),
+                        analysis.highlights_report.error_message,
+                        Some(analysis.highlights_report.total_proposed as u32),
+                        Some(total_passed as u32),
+                    )
+                }
+                Err(err) => {
+                    let err_msg = err.to_string();
+                    tracing::warn!("Analysis fallback on sermon {sermon_id}: {err_msg}");
+                    emit(
+                        &app,
+                        sermon_id,
+                        "detecting",
+                        50,
+                        "Falling back to offline sermon heuristics & audio peak analysis…",
+                    );
+                    let audio_profile = dabar_core::ffmpeg::detect_audio_loudness_peaks(&audio_path).await.ok();
+                    let fallback_analysis = dabar_core::llm::analyze_sermon_offline_heuristics_with_audio(
+                        &segments,
+                        audio_profile.as_ref().map(|p| p.peaks.as_slice()),
+                    );
+                    let total_passed = fallback_analysis.highlights_report.total_passed;
+                    let chapter_count = fallback_analysis.chapters.len();
+                    emit(
+                        &app,
+                        sermon_id,
+                        "detecting",
+                        100,
+                        &format!(
+                            "Generated {} chapters and {} moments.",
+                            chapter_count, total_passed
+                        ),
+                    );
+                    (
+                        fallback_analysis.highlights_report.highlights,
+                        fallback_analysis.chapters,
+                        Some("heuristic".to_string()),
+                        Some("Cloud AI unavailable, used sermon heuristics and audio loudness".to_string()),
+                        Some(fallback_analysis.highlights_report.total_proposed as u32),
+                        Some(total_passed as u32),
+                    )
+                }
             }
         }
     };

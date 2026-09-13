@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::models::TranscriptSegment;
@@ -610,6 +611,188 @@ pub async fn check_ffmpeg_installed() -> Result<String> {
     Ok(version_line)
 }
 
+/// A detected audio loudness/energy peak moment in sermon delivery.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AudioPeak {
+    /// Timestamp in seconds.
+    pub timestamp: f32,
+    /// Momentary loudness in LUFS.
+    pub loudness_lufs: f32,
+    /// Normalized dynamic emphasis above the baseline (0.0 = baseline/soft, 1.0 = intense climax/shout).
+    pub relative_energy: f32,
+}
+
+/// Overall loudness metrics and peak profile of an audio file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AudioLoudnessProfile {
+    /// Integrated loudness in LUFS across the recording (e.g. -24.0 LUFS).
+    pub integrated_loudness: f32,
+    /// Loudness range in LU (dynamic variation).
+    pub loudness_range: f32,
+    /// Detected vocal energy peaks.
+    pub peaks: Vec<AudioPeak>,
+}
+
+/// Parses FFmpeg ebur128 filter output from stderr into an `AudioLoudnessProfile`.
+/// Handles both the per-frame timestamps and the trailing summary block.
+pub fn parse_ebur128_output(output: &str) -> AudioLoudnessProfile {
+    let mut integrated_loudness: Option<f32> = None;
+    let mut loudness_range: Option<f32> = None;
+
+    // Scan lines for summary and per-moment data
+    let mut raw_samples: Vec<(f32, f32)> = Vec::new(); // (timestamp, momentary_lufs)
+
+    let mut lines = output.lines();
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim();
+
+        // Check for Integrated loudness summary
+        if trimmed.starts_with("Integrated loudness:") {
+            if let Some(next_line) = lines.next() {
+                let nt = next_line.trim();
+                if let Some(rest) = nt.strip_prefix("I:") {
+                    if let Some(val_str) = rest.split_whitespace().next() {
+                        if let Ok(val) = val_str.parse::<f32>() {
+                            integrated_loudness = Some(val);
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Check for Loudness range summary
+        if trimmed.starts_with("Loudness range:") {
+            if let Some(next_line) = lines.next() {
+                let nt = next_line.trim();
+                if let Some(rest) = nt.strip_prefix("LRA:") {
+                    if let Some(val_str) = rest.split_whitespace().next() {
+                        if let Ok(val) = val_str.parse::<f32>() {
+                            loudness_range = Some(val);
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Parse momentary frame output lines:
+        // "[Parsed_ebur128_0 @ ...] t: 0.399977 TARGET:-23 LUFS M: -21.1 S:-120.7 I: -21.1 LUFS LRA: 0.0 LU"
+        if trimmed.contains("t:") && trimmed.contains("M:") {
+            if let Some(t_idx) = trimmed.find("t:") {
+                let t_part = &trimmed[t_idx + 2..];
+                if let Some(t_str) = t_part.split_whitespace().next() {
+                    if let Ok(t) = t_str.parse::<f32>() {
+                        if let Some(m_idx) = trimmed.find("M:") {
+                            let m_part = &trimmed[m_idx + 2..];
+                            if let Some(m_str) = m_part.split_whitespace().next() {
+                                if let Ok(m) = m_str.parse::<f32>() {
+                                    // Ignore silence / uninitialized frames (< -70 LUFS)
+                                    if m > -70.0 {
+                                        raw_samples.push((t, m));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Determine baseline integrated loudness
+    let baseline = match integrated_loudness {
+        Some(i) if i > -70.0 => i,
+        _ => {
+            if raw_samples.is_empty() {
+                -24.0
+            } else {
+                let sum: f32 = raw_samples.iter().map(|(_, m)| *m).sum();
+                sum / raw_samples.len() as f32
+            }
+        }
+    };
+
+    let lra = loudness_range.unwrap_or(0.0);
+
+    // Bucket into 1.0-second intervals to aggregate high-frequency frames into clean peaks
+    let mut buckets: std::collections::BTreeMap<u32, f32> = std::collections::BTreeMap::new();
+    for (t, m) in raw_samples {
+        let sec = t.max(0.0) as u32;
+        let entry = buckets.entry(sec).or_insert(m);
+        if m > *entry {
+            *entry = m;
+        }
+    }
+
+    // Identify peaks that rise noticeably above the baseline delivery loudness
+    let threshold = baseline + 1.5;
+    let mut peaks = Vec::new();
+
+    for (sec, max_m) in buckets {
+        if max_m >= threshold {
+            let diff = max_m - baseline;
+            // 10 dB elevation above integrated conversational baseline represents full shouting/peak emphasis
+            let rel = (diff / 10.0).clamp(0.0, 1.0);
+            peaks.push(AudioPeak {
+                timestamp: sec as f32 + 0.5,
+                loudness_lufs: max_m,
+                relative_energy: rel,
+            });
+        }
+    }
+
+    AudioLoudnessProfile {
+        integrated_loudness: baseline,
+        loudness_range: lra,
+        peaks,
+    }
+}
+
+/// Returns the dynamic audio energy boost (0.0 to 1.0) for a time span [start, end].
+/// If loudness peaks are present in this window, returns the maximum relative energy observed.
+pub fn compute_segment_audio_energy(peaks: &[AudioPeak], start: f32, end: f32) -> f32 {
+    let mut max_energy = 0.0_f32;
+    for peak in peaks {
+        if peak.timestamp >= start && peak.timestamp <= end {
+            if peak.relative_energy > max_energy {
+                max_energy = peak.relative_energy;
+            }
+        }
+    }
+    max_energy
+}
+
+/// Runs FFmpeg ebur128 loudness analysis on the given audio file, detecting moments of
+/// vocal energy spikes, oratorical emphasis, and dynamic loudness elevation.
+pub async fn detect_audio_loudness_peaks(audio_path: &Path) -> Result<AudioLoudnessProfile> {
+    if !audio_path.exists() {
+        anyhow::bail!("Audio file not found: {}", audio_path.display());
+    }
+
+    let output = get_binary_command("ffmpeg")
+        .arg("-hide_banner")
+        .arg("-nostats")
+        .arg("-i")
+        .arg(audio_path)
+        .arg("-ac")
+        .arg("1")
+        .arg("-ar")
+        .arg("16000")
+        .arg("-af")
+        .arg("ebur128")
+        .arg("-f")
+        .arg("null")
+        .arg(if cfg!(windows) { "NUL" } else { "/dev/null" })
+        .output()
+        .await
+        .context("executing ffmpeg ebur128 loudness analysis")?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let profile = parse_ebur128_output(&stderr);
+    Ok(profile)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -726,5 +909,60 @@ mod tests {
     fn test_parse_ffmpeg_duration_invalid() {
         let sample = "No duration line present here";
         assert!(parse_ffmpeg_duration(sample).is_none());
+    }
+
+    #[test]
+    fn test_parse_ebur128_output() {
+        let sample = r#"
+[Parsed_ebur128_0 @ 0000028fb2e64f80] t: 0.100000 TARGET:-23 LUFS M: -24.0 S:-120.7 I: -24.0 LUFS LRA: 0.0 LU
+[Parsed_ebur128_0 @ 0000028fb2e64f80] t: 1.200000 TARGET:-23 LUFS M: -24.5 S:-120.7 I: -24.0 LUFS LRA: 0.0 LU
+[Parsed_ebur128_0 @ 0000028fb2e64f80] t: 5.100000 TARGET:-23 LUFS M: -14.0 S:-20.0 I: -22.0 LUFS LRA: 2.0 LU
+[Parsed_ebur128_0 @ 0000028fb2e64f80] t: 5.500000 TARGET:-23 LUFS M: -12.0 S:-18.0 I: -21.0 LUFS LRA: 3.0 LU
+[Parsed_ebur128_0 @ 0000028fb2e64f80] Summary:
+
+  Integrated loudness:
+    I:         -24.0 LUFS
+    Threshold: -34.0 LUFS
+
+  Loudness range:
+    LRA:         5.0 LU
+"#;
+        let profile = parse_ebur128_output(sample);
+        assert!((profile.integrated_loudness - (-24.0)).abs() < 0.01);
+        assert!((profile.loudness_range - 5.0).abs() < 0.01);
+        // Moment at 5.x is -12.0 LUFS, which is 12 dB above -24.0 baseline -> relative_energy clamped to 1.0
+        assert_eq!(profile.peaks.len(), 1);
+        let peak = &profile.peaks[0];
+        assert_eq!(peak.timestamp, 5.5);
+        assert!((peak.loudness_lufs - (-12.0)).abs() < 0.01);
+        assert!((peak.relative_energy - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_compute_segment_audio_energy() {
+        let peaks = vec![
+            AudioPeak {
+                timestamp: 10.5,
+                loudness_lufs: -18.0,
+                relative_energy: 0.6,
+            },
+            AudioPeak {
+                timestamp: 25.5,
+                loudness_lufs: -12.0,
+                relative_energy: 0.95,
+            },
+        ];
+
+        // Segment overlapping first peak
+        let energy1 = compute_segment_audio_energy(&peaks, 10.0, 15.0);
+        assert!((energy1 - 0.6).abs() < 0.01);
+
+        // Segment overlapping second peak
+        let energy2 = compute_segment_audio_energy(&peaks, 20.0, 30.0);
+        assert!((energy2 - 0.95).abs() < 0.01);
+
+        // Segment with no peaks
+        let energy3 = compute_segment_audio_energy(&peaks, 0.0, 5.0);
+        assert_eq!(energy3, 0.0);
     }
 }

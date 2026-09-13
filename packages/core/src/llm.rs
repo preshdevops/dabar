@@ -1,3 +1,4 @@
+use crate::ffmpeg::{compute_segment_audio_energy, AudioPeak};
 use crate::models::{Chapter, Highlight, TranscriptSegment};
 use crate::structuring::detect_scripture_references;
 use anyhow::{Context, Result};
@@ -29,8 +30,9 @@ pub const OPENROUTER_MODELS: &[&str] = &[
     "anthropic/claude-3.5-sonnet",
 ];
 
-const CLIP_MIN_SECS: f32 = 30.0;
-// No upper limit — special moments (altar calls, testimonies) can run 5+ minutes
+pub const CLIP_MIN_SECS: f32 = 30.0;
+pub const CLIP_MAX_SECS: f32 = 90.0;
+// Cloud prompt constraint
 const MAX_PROMPT_WORDS: usize = 1_400;
 
 #[derive(Debug, Deserialize)]
@@ -596,11 +598,80 @@ async fn try_chat_completion(
 pub fn segment_importance_score(seg: &TranscriptSegment) -> f32 {
     let text = seg.text.to_lowercase();
     let mut score: f32 = 0.0;
+
+    // 1. Scripture citations
     let refs = detect_scripture_references(&seg.text, seg.start);
-    score += refs.len() as f32 * 0.35;
-    score += seg.text.matches('?').count() as f32 * 0.12;
-    score += seg.text.matches('!').count() as f32 * 0.08;
+    if !refs.is_empty() {
+        score += 0.40;
+        if refs.len() > 1 {
+            score += 0.15;
+        }
+    }
     for p in [
+        "open your bibles",
+        "turn with me to",
+        "turn to",
+        "the bible says",
+        "scripture says",
+        "in the book of",
+        "look at verse",
+        "hear the word of the lord",
+        "the word of god",
+        "chapter and verse",
+    ] {
+        if text.contains(p) {
+            score += 0.15;
+            break;
+        }
+    }
+
+    // 2. Structural sermon markers & key points
+    for p in [
+        "point number one",
+        "point number two",
+        "point number three",
+        "point number four",
+        "point number five",
+        "first point",
+        "second point",
+        "third point",
+        "my first point",
+        "my second point",
+        "my third point",
+        "first of all",
+        "firstly",
+        "secondly",
+        "thirdly",
+        "finally",
+        "in conclusion",
+        "to conclude",
+        "in closing",
+        "the key is",
+        "the main thing",
+        "principle number",
+        "write this down",
+    ] {
+        if text.contains(p) {
+            score += 0.25;
+            break;
+        }
+    }
+
+    // 3. Imperative & attention calls
+    for p in [
+        "listen to me",
+        "listen closely",
+        "look at me",
+        "hear me",
+        "don't miss this",
+        "do not miss this",
+        "you cannot miss this",
+        "pay attention",
+        "somebody needs to hear this",
+        "mark my words",
+        "catch this",
+        "i want you to hear this",
+        "take this down",
         "you must",
         "you need to",
         "you have to",
@@ -608,48 +679,24 @@ pub fn segment_importance_score(seg: &TranscriptSegment) -> f32 {
         "stand up",
         "rise up",
         "hold on",
-        "listen to me",
         "receive this",
     ] {
         if text.contains(p) {
-            score += 0.15;
+            score += 0.20;
+            break;
         }
     }
+
+    // 4. Theological declarations & affirmations
     for p in [
-        "the truth is",
-        "what god is saying",
-        "here's the key",
-        "i want you to understand",
-        "let me tell you something",
-        "this is important",
-        "the spirit of god",
-        "holy spirit",
-    ] {
-        if text.contains(p) {
-            score += 0.18;
-        }
-    }
-    let words: Vec<&str> = text.split_whitespace().collect();
-    if words.len() >= 4 {
-        let mut counts = std::collections::HashMap::new();
-        for w in &words {
-            *counts.entry(w).or_insert(0usize) += 1;
-        }
-        let reps: usize = counts.values().filter(|&&c| c >= 2).sum();
-        score += (reps as f32 * 0.04).min(0.20);
-    }
-    for p in [
-        "i remember",
-        "there was a time",
-        "let me share",
-        "one day",
+        "the lord told me",
         "god told me",
-    ] {
-        if text.contains(p) {
-            score += 0.10;
-        }
-    }
-    for p in [
+        "the lord said to me",
+        "the spirit of the lord",
+        "holy spirit",
+        "by the grace of god",
+        "grace of god",
+        "jesus said",
         "jesus christ",
         "the blood of jesus",
         "salvation",
@@ -659,21 +706,46 @@ pub fn segment_importance_score(seg: &TranscriptSegment) -> f32 {
         "resurrection",
         "he is risen",
         "god so loved",
-        "grace of god",
+        "i declare",
+        "i prophesy",
+        "i decree",
+        "in the name of jesus",
+        "in jesus' name",
+        "god is able",
+        "god is going to",
     ] {
         if text.contains(p) {
-            score += 0.12;
+            score += 0.20;
+            break;
         }
     }
-    if text.contains("let us pray") || text.contains("father god") || text.contains("in jesus name")
-    {
-        score += 0.08;
+
+    // 5. Cadence, punctuation, rhetorical emphasis
+    score += (seg.text.matches('?').count() as f32 * 0.10).min(0.20);
+    score += (seg.text.matches('!').count() as f32 * 0.10).min(0.20);
+
+    // Repetition check for oratorical cadence
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() >= 4 {
+        let mut counts = std::collections::HashMap::new();
+        for w in &words {
+            if w.len() > 3 {
+                *counts.entry(w).or_insert(0usize) += 1;
+            }
+        }
+        let reps: usize = counts.values().filter(|&&c| c >= 2).sum();
+        score += (reps as f32 * 0.05).min(0.20);
     }
+
+    // Sub-second or tiny fragment dampening
     let dur = (seg.end - seg.start).max(0.0);
-    if dur < 10.0 {
-        score *= 0.3;
+    if dur < 2.5 {
+        score *= 0.4;
+    } else if dur < 5.0 {
+        score *= 0.75;
     }
-    score.min(1.0)
+
+    score.clamp(0.0, 1.0)
 }
 
 fn detect_chapter_boundaries(segments: &[TranscriptSegment], target: usize) -> Vec<usize> {
@@ -745,14 +817,78 @@ fn derive_chapter_title(segments: &[TranscriptSegment], fallback: &str) -> Strin
 }
 
 fn derive_clip_title(segs: &[&TranscriptSegment]) -> String {
-    for seg in segs.iter().take(5) {
-        if let Some(r) = detect_scripture_references(&seg.text, seg.start)
-            .into_iter()
-            .next()
-        {
+    // 1. Check for scripture references in the clip
+    for seg in segs {
+        let refs = detect_scripture_references(&seg.text, seg.start);
+        if let Some(r) = refs.first() {
+            let lower = seg.text.to_lowercase();
+            for theme in [
+                "all things work together",
+                "god is able",
+                "by the grace of god",
+                "grace of god",
+                "love is patient",
+                "fear not",
+                "faith moves mountains",
+                "he is risen",
+                "salvation",
+            ] {
+                if lower.contains(theme) {
+                    let cased = theme
+                        .split_whitespace()
+                        .map(|w| {
+                            let mut c = w.chars();
+                            match c.next() {
+                                None => String::new(),
+                                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    return format!("{}: {}", r.reference, cased);
+                }
+            }
             return format!("Teaching: {}", r.reference);
         }
     }
+
+    // 2. Structural key point
+    for seg in segs {
+        let lower = seg.text.to_lowercase();
+        if lower.contains("point number one") || lower.contains("first point") || lower.contains("firstly") {
+            return format_clip_marker_title("Point 1", seg);
+        } else if lower.contains("point number two") || lower.contains("second point") || lower.contains("secondly") {
+            return format_clip_marker_title("Point 2", seg);
+        } else if lower.contains("point number three") || lower.contains("third point") || lower.contains("thirdly") {
+            return format_clip_marker_title("Point 3", seg);
+        } else if lower.contains("finally") || lower.contains("in conclusion") || lower.contains("in closing") {
+            return format_clip_marker_title("In Conclusion", seg);
+        }
+    }
+
+    // 3. Imperative / Attention call
+    for seg in segs {
+        let lower = seg.text.to_lowercase();
+        if lower.contains("listen to me") || lower.contains("listen closely") || lower.contains("don't miss this") || lower.contains("hear me") {
+            return format_clip_marker_title("Listen Closely", seg);
+        } else if lower.contains("write this down") || lower.contains("take this down") {
+            return format_clip_marker_title("Take Note", seg);
+        }
+    }
+
+    // 4. Theological declaration
+    for seg in segs {
+        let lower = seg.text.to_lowercase();
+        if lower.contains("the lord told me") || lower.contains("god told me") {
+            return format_clip_marker_title("Prophetic Word", seg);
+        } else if lower.contains("by the grace of god") || lower.contains("grace of god") {
+            return format_clip_marker_title("The Grace of God", seg);
+        } else if lower.contains("jesus said") || lower.contains("jesus christ") {
+            return format_clip_marker_title("Declaration of Faith", seg);
+        }
+    }
+
+    // 5. Oratorical punchline fallback
     let best = segs.iter().max_by(|a, b| {
         segment_importance_score(a)
             .partial_cmp(&segment_importance_score(b))
@@ -773,7 +909,113 @@ fn derive_clip_title(segs: &[&TranscriptSegment]) -> String {
     "Key Preaching Moment".to_string()
 }
 
-pub fn analyze_sermon_offline_heuristics(segments: &[TranscriptSegment]) -> SermonAnalysisResult {
+fn format_clip_marker_title(label: &str, seg: &TranscriptSegment) -> String {
+    let words: Vec<&str> = seg.text.split_whitespace().collect();
+    let phrase = words.iter().take(6).copied().collect::<Vec<_>>().join(" ");
+    let cleaned = phrase.trim_end_matches(|c: char| !c.is_alphanumeric());
+    if cleaned.len() > 10 {
+        format!("{}: {}", label, cleaned)
+    } else {
+        label.to_string()
+    }
+}
+
+fn derive_clip_reason(segs: &[&TranscriptSegment], max_audio_energy: f32) -> String {
+    let mut scriptures = Vec::new();
+    let mut has_key_point = false;
+    let mut has_imperative = false;
+    let mut has_theological = false;
+
+    for seg in segs {
+        let refs = detect_scripture_references(&seg.text, seg.start);
+        for r in refs {
+            if !scriptures.contains(&r.reference) {
+                scriptures.push(r.reference);
+            }
+        }
+        let lower = seg.text.to_lowercase();
+        if lower.contains("point number")
+            || lower.contains("first point")
+            || lower.contains("second point")
+            || lower.contains("finally")
+            || lower.contains("in conclusion")
+        {
+            has_key_point = true;
+        }
+        if lower.contains("listen to me")
+            || lower.contains("look at verse")
+            || lower.contains("write this down")
+            || lower.contains("don't miss this")
+            || lower.contains("hear the word")
+        {
+            has_imperative = true;
+        }
+        if lower.contains("the lord told me")
+            || lower.contains("by the grace of god")
+            || lower.contains("jesus said")
+            || lower.contains("salvation")
+            || lower.contains("blood of jesus")
+        {
+            has_theological = true;
+        }
+    }
+
+    let audio_note = if max_audio_energy >= 0.45 {
+        " paired with dynamic vocal elevation and acoustic emphasis"
+    } else if max_audio_energy >= 0.25 {
+        " with heightened oratorical energy"
+    } else {
+        ""
+    };
+
+    if !scriptures.is_empty() {
+        let sc_str = scriptures.join(", ");
+        if has_imperative {
+            format!("Scripture focus on {sc_str} with an urgent attention call{audio_note}.")
+        } else if has_key_point {
+            format!("Structural teaching from {sc_str}{audio_note}.")
+        } else {
+            format!("Powerful scripture exposition on {sc_str}{audio_note}.")
+        }
+    } else if has_key_point {
+        if has_imperative {
+            format!("Core sermon key point delivered with direct audience engagement{audio_note}.")
+        } else {
+            format!("Structural sermon principle highlighting key takeaway{audio_note}.")
+        }
+    } else if has_imperative {
+        format!("Urgent oratorical exhortation and call to action{audio_note}.")
+    } else if has_theological {
+        format!("Theological declaration of faith and conviction{audio_note}.")
+    } else {
+        format!("High-impact preaching moment with oratorical emphasis{audio_note}.")
+    }
+}
+
+fn derive_clip_hook(segs: &[&TranscriptSegment], scores: &[f32], title: &str) -> String {
+    if let Some((best_seg, _)) = segs
+        .iter()
+        .zip(scores.iter())
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+    {
+        let trimmed = best_seg.text.trim();
+        if trimmed.len() <= 120 {
+            return trimmed.to_string();
+        }
+        let truncated: String = trimmed.chars().take(117).collect();
+        return format!("{truncated}...");
+    }
+    title.to_string()
+}
+
+/// Analyzes a sermon transcript using offline sermon heuristics (scripture citations,
+/// structural markers, attention calls, theological affirmations) combined with optional
+/// FFmpeg acoustic loudness peaks. Clusters consecutive high-value segments into coherent
+/// 30-90 second highlight clips with natural boundaries.
+pub fn analyze_sermon_offline_heuristics_with_audio(
+    segments: &[TranscriptSegment],
+    audio_peaks: Option<&[AudioPeak]>,
+) -> SermonAnalysisResult {
     if segments.is_empty() {
         return SermonAnalysisResult {
             chapters: Vec::new(),
@@ -787,26 +1029,155 @@ pub fn analyze_sermon_offline_heuristics(segments: &[TranscriptSegment]) -> Serm
             },
         };
     }
-    let total_dur = segments.last().map(|s| s.end).unwrap_or(0.0);
-    let scores: Vec<f32> = segments.iter().map(segment_importance_score).collect();
 
-    // Build candidates: sum scores over 45s windows
-    let mut candidates: Vec<(usize, f32)> = (0..segments.len())
-        .filter_map(|i| {
-            let ws: f32 = segments[i..]
-                .iter()
-                .zip(scores[i..].iter())
-                .take_while(|(s, _)| s.start - segments[i].start < 45.0)
-                .map(|(_, sc)| sc)
-                .sum();
-            if ws > 0.1 {
-                Some((i, ws))
-            } else {
-                None
-            }
+    let total_dur = segments.last().map(|s| s.end).unwrap_or(0.0);
+    let text_scores: Vec<f32> = segments.iter().map(segment_importance_score).collect();
+    let audio_energies: Vec<f32> = segments
+        .iter()
+        .map(|s| {
+            audio_peaks
+                .map(|p| compute_segment_audio_energy(p, s.start, s.end))
+                .unwrap_or(0.0)
         })
         .collect();
-    candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let combined_scores: Vec<f32> = text_scores
+        .iter()
+        .zip(audio_energies.iter())
+        .map(|(&t, &a)| (t * 0.70 + a * 0.30).clamp(0.0, 1.0))
+        .collect();
+
+    // Identify candidate anchor moments:
+    // Any segment with high combined score or containing scripture or key point or attention call
+    let mut candidate_clips: Vec<(usize, usize, f32)> = Vec::new(); // (start_idx, end_idx, composite_score)
+
+    for i in 0..segments.len() {
+        let seg = &segments[i];
+        let has_refs = !detect_scripture_references(&seg.text, seg.start).is_empty();
+        let lower = seg.text.to_lowercase();
+        let is_marker = lower.contains("point number")
+            || lower.contains("first point")
+            || lower.contains("second point")
+            || lower.contains("finally")
+            || lower.contains("in conclusion")
+            || lower.contains("listen to me")
+            || lower.contains("don't miss this")
+            || lower.contains("the lord told me")
+            || lower.contains("by the grace of god");
+
+        if combined_scores[i] < 0.18 && !has_refs && !is_marker {
+            continue;
+        }
+
+        // Determine start boundary: check if previous segment provided natural lead-in
+        let start_idx = if i > 0 {
+            let prev_text = segments[i - 1].text.to_lowercase();
+            if prev_text.contains("listen to me")
+                || prev_text.contains("look at verse")
+                || prev_text.contains("turn to")
+                || prev_text.contains("open your bibles")
+                || prev_text.contains("point number")
+            {
+                i - 1
+            } else {
+                i
+            }
+        } else {
+            i
+        };
+
+        let start_time = segments[start_idx].start;
+
+        // Find best end boundary within [CLIP_MIN_SECS, CLIP_MAX_SECS]
+        let mut best_boundary: Option<(usize, f32)> = None; // (end_idx, boundary_score)
+        let mut last_valid_idx: Option<usize> = None;
+
+        for j in start_idx..segments.len() {
+            let dur = segments[j].end - start_time;
+            if dur < CLIP_MIN_SECS {
+                continue;
+            }
+            if dur > CLIP_MAX_SECS {
+                break;
+            }
+
+            last_valid_idx = Some(j);
+
+            // Score this potential boundary
+            let trimmed = segments[j].text.trim_end();
+            let ends_punct = trimmed.ends_with('.') || trimmed.ends_with('!') || trimmed.ends_with('?');
+            let pause_after = if j + 1 < segments.len() {
+                segments[j + 1].start - segments[j].end
+            } else {
+                1.0
+            };
+
+            // Sweet spot for short-form highlights is 45-75 seconds
+            let sweet_spot_score = 1.0 - ((dur - 60.0).abs() / 40.0).clamp(0.0, 1.0);
+            let boundary_score = sweet_spot_score * 0.40
+                + if ends_punct { 0.35 } else { 0.0 }
+                + if pause_after >= 0.4 { 0.25 } else { 0.0 };
+
+            if let Some((_, best_sc)) = best_boundary {
+                if boundary_score > best_sc {
+                    best_boundary = Some((j, boundary_score));
+                }
+            } else {
+                best_boundary = Some((j, boundary_score));
+            }
+        }
+
+        let final_end_idx = match best_boundary {
+            Some((idx, _)) => idx,
+            None => match last_valid_idx {
+                Some(idx) => idx,
+                None => continue,
+            },
+        };
+
+        let clip_dur = segments[final_end_idx].end - start_time;
+        if clip_dur < CLIP_MIN_SECS {
+            continue;
+        }
+
+        // Calculate clip composite score
+        let clip_combined: &[f32] = &combined_scores[start_idx..=final_end_idx];
+        let avg_combined = clip_combined.iter().sum::<f32>() / clip_combined.len() as f32;
+
+        let mut has_scripture = false;
+        let mut has_marker = false;
+        for s in &segments[start_idx..=final_end_idx] {
+            if !detect_scripture_references(&s.text, s.start).is_empty() {
+                has_scripture = true;
+            }
+            let l = s.text.to_lowercase();
+            if l.contains("point number")
+                || l.contains("listen to me")
+                || l.contains("don't miss this")
+                || l.contains("the lord told me")
+                || l.contains("by the grace of god")
+            {
+                has_marker = true;
+            }
+        }
+
+        let max_audio = audio_energies[start_idx..=final_end_idx]
+            .iter()
+            .cloned()
+            .fold(0.0_f32, f32::max);
+
+        let composite = (0.75
+            + avg_combined * 0.12
+            + if has_scripture { 0.08 } else { 0.0 }
+            + if has_marker { 0.06 } else { 0.0 }
+            + max_audio * 0.06)
+            .clamp(0.78, 0.98);
+
+        candidate_clips.push((start_idx, final_end_idx, composite));
+    }
+
+    // Sort candidate clips by composite score descending
+    candidate_clips.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
 
     let target_clips = if total_dur > 3600.0 {
         6
@@ -815,79 +1186,80 @@ pub fn analyze_sermon_offline_heuristics(segments: &[TranscriptSegment]) -> Serm
     } else {
         3
     };
-    let gap = 120.0_f32;
-    let mut highlights: Vec<Highlight> = Vec::new();
-    let mut last_end = -gap;
-    let mut used: Vec<f32> = Vec::new();
-    // Default target clip duration — the heuristic extends to the natural end of the peak
-    let clip_target_dur = if total_dur > 3600.0 {
-        150.0_f32
-    } else {
-        120.0_f32
-    };
 
-    for (seg_idx, _) in &candidates {
+    let mut highlights: Vec<Highlight> = Vec::new();
+    let min_gap_secs = 35.0_f32;
+
+    for (s_idx, e_idx, score) in candidate_clips {
         if highlights.len() >= target_clips {
             break;
         }
-        let start = segments[*seg_idx].start;
-        if start < last_end + gap || used.iter().any(|&s| (s - start).abs() < gap) {
+
+        let start = segments[s_idx].start;
+        let end = segments[e_idx].end;
+
+        // Verify non-overlapping with existing selected highlights
+        let overlaps = highlights.iter().any(|h| {
+            let gap_before = h.start_time - end;
+            let gap_after = start - h.end_time;
+            gap_before < min_gap_secs && gap_after < min_gap_secs
+        });
+
+        if overlaps {
             continue;
         }
-        // Extend to at least clip_target_dur; no upper cap — allow the moment to breathe
-        let end_target = start + clip_target_dur;
-        let end = segments[*seg_idx..]
+
+        let clip_segs: Vec<&TranscriptSegment> = segments[s_idx..=e_idx].iter().collect();
+        let clip_scores = &combined_scores[s_idx..=e_idx];
+        let max_audio = audio_energies[s_idx..=e_idx]
             .iter()
-            .find(|s| s.end >= end_target)
-            .map(|s| s.end)
-            .unwrap_or_else(|| (start + clip_target_dur).min(total_dur));
-        if end <= start + CLIP_MIN_SECS {
-            continue;
-        }
-        let clip_segs: Vec<&TranscriptSegment> = segments[*seg_idx..]
-            .iter()
-            .take_while(|s| s.start <= end)
-            .collect();
+            .cloned()
+            .fold(0.0_f32, f32::max);
+
         let title = derive_clip_title(&clip_segs);
-        let hook = segments[*seg_idx..]
-            .iter()
-            .zip(scores[*seg_idx..].iter())
-            .take_while(|(s, _)| s.start <= end)
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(s, _)| s.text.chars().take(120).collect::<String>())
-            .unwrap_or_else(|| title.clone());
+        let reason = derive_clip_reason(&clip_segs, max_audio);
+        let hook = derive_clip_hook(&clip_segs, clip_scores, &title);
+
         highlights.push(Highlight {
             id: Uuid::new_v4(),
             title,
             start_time: start,
             end_time: end,
-            score: (0.85 + highlights.len() as f32 * 0.02).min(0.95),
-            reason: "Multi-signal heuristic peak.".to_string(),
+            score,
+            reason,
             suggested_hook_text: hook,
         });
-        last_end = end;
-        used.push(start);
     }
 
-    if highlights.is_empty() && total_dur > 60.0 {
+    // Fallback if no highlights met threshold but sermon duration is sufficient
+    if highlights.is_empty() && total_dur >= CLIP_MIN_SECS {
         let count = 3_usize.min((total_dur / 300.0) as usize + 1);
         let interval = total_dur / (count as f32 + 1.0);
+        let clip_target_dur = 60.0_f32.min(CLIP_MAX_SECS);
+
         for i in 1..=count {
             let s = interval * i as f32;
             let e = (s + clip_target_dur).min(total_dur);
-            if e > s + CLIP_MIN_SECS {
+            if e >= s + CLIP_MIN_SECS {
                 highlights.push(Highlight {
                     id: Uuid::new_v4(),
                     title: format!("Key Moment · Part {i}"),
                     start_time: s,
                     end_time: e,
                     score: 0.80,
-                    reason: "Evenly-spaced fallback.".to_string(),
+                    reason: "Evenly-spaced preaching segment with core thematic content.".to_string(),
                     suggested_hook_text: "Key sermon moment.".to_string(),
                 });
             }
         }
     }
+
+    // Sort highlights by chronological start time
+    highlights.sort_by(|a, b| {
+        a.start_time
+            .partial_cmp(&b.start_time)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let target_chs = if total_dur > 3600.0 {
         8
@@ -975,5 +1347,210 @@ pub fn analyze_sermon_offline_heuristics(segments: &[TranscriptSegment]) -> Serm
             status: HighlightDetectionStatus::Heuristic,
             error_message: Some("Cloud AI unavailable, used keyword detection".to_string()),
         },
+    }
+}
+
+pub fn analyze_sermon_offline_heuristics(segments: &[TranscriptSegment]) -> SermonAnalysisResult {
+    analyze_sermon_offline_heuristics_with_audio(segments, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_segment_importance_score_scripture() {
+        let seg_with_ref = TranscriptSegment {
+            start: 10.0,
+            end: 18.0,
+            text: "Open your bibles and turn to Romans 8:28, where we know all things work together for good!".to_string(),
+        };
+        let seg_plain = TranscriptSegment {
+            start: 18.0,
+            end: 26.0,
+            text: "We parked the car on the street yesterday morning.".to_string(),
+        };
+
+        let score_ref = segment_importance_score(&seg_with_ref);
+        let score_plain = segment_importance_score(&seg_plain);
+
+        assert!(
+            score_ref >= 0.50,
+            "Scripture citation + intro + exclamation should yield high score, got {score_ref}"
+        );
+        assert!(
+            score_plain < 0.20,
+            "Plain conversational segment should score low, got {score_plain}"
+        );
+    }
+
+    #[test]
+    fn test_segment_importance_score_markers_and_imperatives() {
+        let seg_key_point = TranscriptSegment {
+            start: 30.0,
+            end: 38.0,
+            text: "Point number one: by the grace of God, you are victorious in Christ!".to_string(),
+        };
+        let seg_imperative = TranscriptSegment {
+            start: 40.0,
+            end: 48.0,
+            text: "Listen to me! Write this down right now: don't miss this truth!".to_string(),
+        };
+
+        let score_kp = segment_importance_score(&seg_key_point);
+        let score_imp = segment_importance_score(&seg_imperative);
+
+        assert!(
+            score_kp >= 0.40,
+            "Key point + theological declaration should score high, got {score_kp}"
+        );
+        assert!(
+            score_imp >= 0.40,
+            "Attention call + imperative + exclamation should score high, got {score_imp}"
+        );
+    }
+
+    #[test]
+    fn test_offline_clustering_bounds_and_duration() {
+        // Build a synthetic 3-minute sermon with a clear central preaching moment
+        let mut segments = Vec::new();
+        let mut t = 0.0_f32;
+
+        // Intro (0 to 45s)
+        for i in 0..9 {
+            segments.push(TranscriptSegment {
+                start: t,
+                end: t + 5.0,
+                text: format!("Good morning church, welcome to service part {i}."),
+            });
+            t += 5.0;
+        }
+
+        // Climax moment with scripture & imperative (45s to 105s = 60s span)
+        segments.push(TranscriptSegment {
+            start: t,
+            end: t + 6.0,
+            text: "Listen to me closely church. Open your bibles to John 3:16.".to_string(),
+        });
+        t += 6.0;
+
+        segments.push(TranscriptSegment {
+            start: t,
+            end: t + 8.0,
+            text: "For God so loved the world that He gave His only begotten Son!".to_string(),
+        });
+        t += 8.0;
+
+        segments.push(TranscriptSegment {
+            start: t,
+            end: t + 10.0,
+            text: "Point number one: by the grace of God you have eternal life through Jesus Christ!".to_string(),
+        });
+        t += 10.0;
+
+        segments.push(TranscriptSegment {
+            start: t,
+            end: t + 10.0,
+            text: "Don't miss this! Write this down in your heart forever.".to_string(),
+        });
+        t += 10.0;
+
+        segments.push(TranscriptSegment {
+            start: t,
+            end: t + 8.0,
+            text: "Whoever believes in Him shall not perish but have everlasting peace.".to_string(),
+        });
+        t += 8.0;
+
+        // Conclusion
+        while t < 180.0 {
+            segments.push(TranscriptSegment {
+                start: t,
+                end: (t + 6.0).min(180.0),
+                text: "Let us pray as we conclude our gathering today.".to_string(),
+            });
+            t += 6.0;
+        }
+
+        let result = analyze_sermon_offline_heuristics(&segments);
+        assert!(!result.highlights_report.highlights.is_empty(), "Should generate highlights");
+
+        for hl in &result.highlights_report.highlights {
+            let dur = hl.end_time - hl.start_time;
+            assert!(
+                dur >= CLIP_MIN_SECS - 0.1,
+                "Clip duration {dur:.1}s must be >= min {CLIP_MIN_SECS}s"
+            );
+            assert!(
+                dur <= CLIP_MAX_SECS + 0.1,
+                "Clip duration {dur:.1}s must be <= max {CLIP_MAX_SECS}s"
+            );
+            assert!(
+                hl.score >= 0.75 && hl.score <= 1.0,
+                "Highlight score must be valid, got {}",
+                hl.score
+            );
+            assert!(!hl.title.is_empty(), "Highlight title should not be empty");
+            assert!(!hl.reason.is_empty(), "Highlight reason should not be empty");
+        }
+
+        // Check that John 3:16 was caught in the highlights
+        let found_scripture = result
+            .highlights_report
+            .highlights
+            .iter()
+            .any(|h| h.title.contains("John 3:16") || h.reason.contains("John 3:16"));
+        assert!(found_scripture, "Climax highlight should detect John 3:16");
+    }
+
+    #[test]
+    fn test_analyze_sermon_offline_with_audio_peaks() {
+        let segments = vec![
+            TranscriptSegment {
+                start: 0.0,
+                end: 15.0,
+                text: "Welcome to today's teaching.".to_string(),
+            },
+            TranscriptSegment {
+                start: 15.0,
+                end: 35.0,
+                text: "Listen to me! Romans 8:28 is the foundation of our hope!".to_string(),
+            },
+            TranscriptSegment {
+                start: 35.0,
+                end: 55.0,
+                text: "All things work together for good to those who love God!".to_string(),
+            },
+            TranscriptSegment {
+                start: 55.0,
+                end: 75.0,
+                text: "Amen and hallelujah.".to_string(),
+            },
+        ];
+
+        // Audio peak right at Romans 8:28 (20s)
+        let peaks = vec![AudioPeak {
+            timestamp: 20.0,
+            loudness_lufs: -12.0,
+            relative_energy: 0.95,
+        }];
+
+        let result_audio = analyze_sermon_offline_heuristics_with_audio(&segments, Some(&peaks));
+        let result_no_audio = analyze_sermon_offline_heuristics(&segments);
+
+        assert!(!result_audio.highlights_report.highlights.is_empty());
+        let hl_audio = &result_audio.highlights_report.highlights[0];
+        let hl_no_audio = &result_no_audio.highlights_report.highlights[0];
+
+        // Audio peak boost should elevate the composite score or mention audio emphasis
+        assert!(
+            hl_audio.score >= hl_no_audio.score,
+            "Audio peak should boost highlight score"
+        );
+        assert!(
+            hl_audio.reason.contains("vocal") || hl_audio.reason.contains("emphasis") || hl_audio.reason.contains("energy"),
+            "Highlight reason should note dynamic audio energy: {}",
+            hl_audio.reason
+        );
     }
 }

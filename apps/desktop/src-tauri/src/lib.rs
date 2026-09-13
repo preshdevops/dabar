@@ -180,6 +180,14 @@ async fn start_pipeline(
         .ok()
         .flatten()
         .unwrap_or_else(|| "llama3.2:3b".to_string());
+    let offline_mode = state
+        .db
+        .get_setting("offline_mode")
+        .await
+        .ok()
+        .flatten()
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
 
     // Spawn pipeline in background — never blocks the UI
     let db_clone = state.db.clone();
@@ -197,7 +205,7 @@ async fn start_pipeline(
             app_data_dir_clone,
             ollama_url,
             ollama_model,
-            false, // offline_mode removed; parameter kept for API compat
+            offline_mode,
         )
         .await;
 
