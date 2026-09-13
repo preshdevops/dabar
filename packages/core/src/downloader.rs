@@ -274,10 +274,12 @@ pub async fn download_youtube_video_section(
     cmd.arg("--download-sections")
         .arg(format!("*{start_time:.3}-{end_time:.3}"))
         .arg("-f")
-        .arg("bestvideo[height<=1080]+bestaudio/best[height<=1080]/best")
+        // 720p is plenty for social clips and downloads ~2-3x faster than 1080p;
+        // --force-keyframes-at-cuts removed: it triggers a full post-download re-encode
+        // which regularly exceeds the timeout. FFmpeg handles precise trimming via -ss/-t.
+        .arg("bestvideo[height<=720]+bestaudio/best[height<=720]/best")
         .arg("-N")
         .arg("4")
-        .arg("--force-keyframes-at-cuts")
         .arg("--buffer-size")
         .arg("1M")
         .arg("-o")
@@ -287,7 +289,7 @@ pub async fn download_youtube_video_section(
     cmd.arg(youtube_url);
 
     let (_, _) =
-        run_yt_dlp_streaming(cmd, "video section download", Duration::from_secs(300)).await?;
+        run_yt_dlp_streaming(cmd, "video section download", Duration::from_secs(600)).await?;
 
     let found_path = find_downloaded_file(output_dir, &base_name).await?;
     tracing::info!(
