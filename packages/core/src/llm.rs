@@ -10,7 +10,14 @@ const OPENAI_CHAT_URL: &str = "https://api.openai.com/v1/chat/completions";
 const OPENROUTER_CHAT_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 
 // Groq-hosted chat models, ordered from strongest to fastest fallback.
-pub const GROQ_MODELS: &[&str] = &["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
+// Prioritizes active Groq production models while keeping Llama fallbacks.
+pub const GROQ_MODELS: &[&str] = &[
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.8-27b",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+];
 
 // OpenAI models
 pub const OPENAI_MODELS: &[&str] = &["gpt-4o", "gpt-4o-mini", "o3-mini"];
@@ -148,6 +155,25 @@ pub fn condense_transcript_to_words(segments: &[TranscriptSegment], max_words: u
 
 fn condense_transcript(segments: &[TranscriptSegment]) -> String {
     condense_transcript_to_words(segments, MAX_PROMPT_WORDS)
+}
+
+pub fn extract_json_payload(s: &str) -> &str {
+    let trimmed = s.trim();
+    if let Some(rest) = trimmed.strip_prefix("```json") {
+        if let Some(end) = rest.rfind("```") {
+            return rest[..end].trim();
+        }
+    } else if let Some(rest) = trimmed.strip_prefix("```") {
+        if let Some(end) = rest.rfind("```") {
+            return rest[..end].trim();
+        }
+    }
+    if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
+        if end > start {
+            return &trimmed[start..=end];
+        }
+    }
+    trimmed
 }
 
 pub fn parse_timestamp_value(val: &serde_json::Value) -> Option<f32> {
@@ -503,7 +529,7 @@ async fn try_chat_completion(
             {"role": "user", "content": user_prompt}
         ],
         "temperature": 0.3,
-        "max_tokens": 1500,
+        "max_tokens": 3500,
         "response_format": {"type": "json_object"}
     });
     let mut req = client.post(url).json(&body);
@@ -536,9 +562,13 @@ async fn try_chat_completion(
         Some(c) => &c.message.content,
         None => return Ok(None),
     };
-    let json_val = match serde_json::from_str::<serde_json::Value>(content) {
+    let clean_json = extract_json_payload(content);
+    let json_val = match serde_json::from_str::<serde_json::Value>(clean_json) {
         Ok(v) => v,
-        Err(_) => return Ok(None),
+        Err(e) => {
+            tracing::warn!("Failed to parse JSON response from {model}: {e}. Raw content: {content}");
+            return Ok(None);
+        }
     };
     let chapters = parse_and_validate_chapters(&json_val);
     let (highlights, discarded, total_proposed) = parse_and_validate_highlights_detailed(&json_val);
